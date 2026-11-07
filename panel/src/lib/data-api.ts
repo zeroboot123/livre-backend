@@ -333,3 +333,69 @@ export async function downloadFile(id: string, fileName: string) {
   link.click();
   URL.revokeObjectURL(url);
 }
+
+// ============================================================
+// API pública (Data API + tokens)
+// ============================================================
+export interface ApiSettings {
+  data_api_enabled: boolean;
+  workflow_api_enabled: boolean;
+  workflow_root_url: string | null;
+  use_display_instead_of_id: boolean;
+  hide_swagger: boolean;
+  updated_at?: string;
+}
+
+export interface ApiToken {
+  id: string;
+  name: string;
+  token_prefix: string;
+  created_at: string;
+  last_used_at: string | null;
+  revoked: boolean;
+}
+
+export interface ApiSettingsResponse {
+  settings: ApiSettings;
+  exposedTables: string[];
+  tokens: ApiToken[];
+}
+
+export function publicApiBase() {
+  return `${apiBase()}/public`;
+}
+
+export async function fetchApiSettings(): Promise<ApiSettingsResponse> {
+  return apiFetch('/api-settings');
+}
+
+export async function updateApiSettings(
+  values: Partial<ApiSettings>
+): Promise<ApiSettings> {
+  const data = await apiFetch('/api-settings', {
+    method: 'PATCH',
+    body: JSON.stringify(values),
+  });
+  return data.settings as ApiSettings;
+}
+
+export async function setExposedTables(tables: string[]): Promise<string[]> {
+  const data = await apiFetch('/api-settings/tables', {
+    method: 'PUT',
+    body: JSON.stringify({ tables }),
+  });
+  return data.exposedTables ?? [];
+}
+
+export async function createApiToken(
+  name: string
+): Promise<{ token: string; apiToken: ApiToken }> {
+  return apiFetch('/api-tokens', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function revokeApiToken(id: string) {
+  return apiFetch(`/api-tokens/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}

@@ -12,6 +12,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
   ChevronDown,
+  Code2,
   Eye,
   FolderOpen,
   ListTree,
@@ -58,6 +59,7 @@ const tabs = [
   { label: 'App data', href: '/database/records', icon: Table2 },
   { label: 'Data types', href: '/database/datatypes', icon: ListTree },
   { label: 'Privacy', href: '/database/privacy', icon: ShieldCheck },
+  { label: 'API', href: '/database/api', icon: Code2 },
   { label: 'Option sets', href: '/database/optionsets', icon: ListTree },
   { label: 'File manager', href: '/database/files', icon: FolderOpen },
 ];

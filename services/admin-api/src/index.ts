@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash, randomBytes } from 'node:crypto';
 import {
   GetObjectCommand,
   PutObjectCommand,
@@ -42,7 +42,9 @@ await app.register(multipart, {
 // Auth middleware
 app.addHook('preHandler', async (request, reply) => {
   if (request.url === '/health') return;
-  
+  // A API pública usa token próprio (X-API-Key / Bearer), validado na rota.
+  if (request.url.startsWith('/public/')) return;
+
   const authHeader = request.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) {
     return reply.code(401).send({ error: 'Token não fornecido' });
@@ -890,6 +892,313 @@ app.delete('/files', async (request: any, reply) => {
     [idList]
   );
   return { deleted: removed.length };
+});
+
+// ============================================================
+// API PÚBLICA (Data API + tokens)
+// ============================================================
+const hashApiToken = (token: string) =>
+  createHash('sha256').update(token).digest('hex');
+
+async function getApiSettings() {
+  const [settings] = (await sql`
+    SELECT * FROM livre_auth.api_settings WHERE id = 1
+  `) as any[];
+  return settings;
+}
+
+async function isTableExposed(table: string) {
+  const [row] = (await sql`
+    SELECT 1 FROM livre_auth.api_exposed_tables WHERE table_name = ${table}
+  `) as any[];
+  return !!row;
+}
+
+async function authenticateApiToken(request: any): Promise<boolean> {
+  const raw = request.headers['x-api-key'] || request.headers.authorization;
+  let token = '';
+  if (typeof raw === 'string') {
+    token = raw.startsWith('Bearer ') ? raw.slice(7) : raw;
+  }
+  if (!token) return false;
+
+  const [row] = (await sql`
+    SELECT id FROM livre_auth.api_tokens
+    WHERE token_hash = ${hashApiToken(token)} AND revoked = FALSE
+    LIMIT 1
+  `) as any[];
+  if (!row) return false;
+
+  await sql`UPDATE livre_auth.api_tokens SET last_used_at = NOW() WHERE id = ${row.id}`;
+  return true;
+}
+
+async function requireApiToken(request: any, reply: any): Promise<boolean> {
+  if (await authenticateApiToken(request)) return true;
+  reply.code(401).send({ error: 'API token inválido ou ausente' });
+  return false;
+}
+
+async function requirePublicTable(table: string, reply: any): Promise<boolean> {
+  const settings = await getApiSettings();
+  if (!settings?.data_api_enabled) {
+    reply.code(403).send({ error: 'Data API desabilitada' });
+    return false;
+  }
+  if (!(await tableExists(table))) {
+    reply.code(404).send({ error: 'Tabela não encontrada' });
+    return false;
+  }
+  if (!(await isTableExposed(table))) {
+    reply.code(403).send({ error: 'Tabela não exposta na API' });
+    return false;
+  }
+  return true;
+}
+
+// ---- Configurações (admin) ----
+app.get('/api-settings', async () => {
+  const settings = await getApiSettings();
+  const exposed = (await sql`
+    SELECT table_name FROM livre_auth.api_exposed_tables ORDER BY table_name
+  `) as any[];
+  const tokens = (await sql`
+    SELECT id, name, token_prefix, created_at, last_used_at, revoked
+    FROM livre_auth.api_tokens ORDER BY created_at DESC
+  `) as any[];
+  return {
+    settings,
+    exposedTables: exposed.map((e) => e.table_name),
+    tokens,
+  };
+});
+
+app.patch('/api-settings', async (request: any, reply) => {
+  const body = request.body || {};
+  const allowed = [
+    'data_api_enabled',
+    'workflow_api_enabled',
+    'workflow_root_url',
+    'use_display_instead_of_id',
+    'hide_swagger',
+  ];
+  const sets: string[] = [];
+  const values: any[] = [];
+  for (const key of allowed) {
+    if (body[key] !== undefined) {
+      values.push(body[key]);
+      sets.push(`${key} = $${values.length}`);
+    }
+  }
+  if (!sets.length) return reply.code(400).send({ error: 'Nada para atualizar' });
+
+  const [settings] = (await sql.unsafe(
+    `UPDATE livre_auth.api_settings SET ${sets.join(', ')}, updated_at = NOW()
+     WHERE id = 1 RETURNING *`,
+    values
+  )) as any[];
+  return { settings };
+});
+
+app.put('/api-settings/tables', async (request: any, reply) => {
+  const requested = Array.isArray(request.body?.tables) ? request.body.tables : [];
+  const valid: string[] = [];
+  for (const t of requested) {
+    if (typeof t === 'string' && (await tableExists(t))) valid.push(t);
+  }
+
+  await sql`DELETE FROM livre_auth.api_exposed_tables`;
+  for (const t of valid) {
+    await sql`
+      INSERT INTO livre_auth.api_exposed_tables (table_name)
+      VALUES (${t}) ON CONFLICT DO NOTHING
+    `;
+  }
+  return { exposedTables: valid };
+});
+
+// ---- Tokens (admin) ----
+app.post('/api-tokens', async (request: any) => {
+  const name = String(request.body?.name || '').trim() || 'API token';
+  const token = 'lv_' + randomBytes(24).toString('hex');
+  const prefix = token.slice(0, 10) + '…';
+
+  const [apiToken] = (await sql`
+    INSERT INTO livre_auth.api_tokens (name, token_prefix, token_hash)
+    VALUES (${name}, ${prefix}, ${hashApiToken(token)})
+    RETURNING id, name, token_prefix, created_at, last_used_at, revoked
+  `) as any[];
+
+  // O token em texto puro só é retornado UMA vez.
+  return { token, apiToken };
+});
+
+app.delete('/api-tokens/:id', async (request: any, reply) => {
+  const [row] = (await sql`
+    UPDATE livre_auth.api_tokens SET revoked = TRUE
+    WHERE id = ${request.params.id} RETURNING id
+  `) as any[];
+  if (!row) return reply.code(404).send({ error: 'Token não encontrado' });
+  return { ok: true };
+});
+
+// ---- Endpoints públicos (exigem token) ----
+app.get('/public/_meta', async (request: any, reply) => {
+  if (!(await requireApiToken(request, reply))) return;
+  const settings = await getApiSettings();
+  const tables = (await sql`
+    SELECT table_name FROM livre_auth.api_exposed_tables ORDER BY table_name
+  `) as any[];
+  return {
+    data_api_enabled: settings?.data_api_enabled ?? false,
+    workflow_api_enabled: settings?.workflow_api_enabled ?? false,
+    tables: tables.map((t) => t.table_name),
+  };
+});
+
+app.get('/public/:table', async (request: any, reply) => {
+  if (!(await requireApiToken(request, reply))) return;
+  const { table } = request.params;
+  if (!(await requirePublicTable(table, reply))) return;
+
+  const limit = Math.min(Math.max(parseInt(request.query.limit || '50', 10) || 50, 1), 200);
+  const offset = Math.max(parseInt(request.query.offset || '0', 10) || 0, 0);
+  const search = String(request.query.search || '').trim();
+
+  const allCols = await columnNames(table);
+  const cols = allCols.filter((n) => !HIDDEN_COLUMNS.has(n));
+  if (!cols.length) return { data: [], total: 0, limit, offset };
+
+  const params: any[] = [];
+  let where = '';
+  if (search) {
+    where = 'WHERE ' + cols.map((n) => `${qident(n)}::text ILIKE $1`).join(' OR ');
+    params.push('%' + search + '%');
+  }
+
+  const select = cols.map(qident).join(', ');
+  const orderCol = allCols.includes('id') ? qident('id') : qident(cols[0]);
+
+  try {
+    const rows = await sql.unsafe(
+      `SELECT ${select} FROM livre_auth.${qident(table)} ${where}
+       ORDER BY ${orderCol} DESC LIMIT ${limit} OFFSET ${offset}`,
+      params
+    );
+    const [countRow] = (await sql.unsafe(
+      `SELECT count(*)::int AS count FROM livre_auth.${qident(table)} ${where}`,
+      params
+    )) as any[];
+    return { data: rows, total: countRow.count, limit, offset };
+  } catch (err: any) {
+    return reply.code(400).send({ error: err.message });
+  }
+});
+
+app.get('/public/:table/:id', async (request: any, reply) => {
+  if (!(await requireApiToken(request, reply))) return;
+  const { table, id } = request.params;
+  if (!(await requirePublicTable(table, reply))) return;
+
+  const allCols = await columnNames(table);
+  const cols = allCols.filter((n) => !HIDDEN_COLUMNS.has(n));
+  try {
+    const [row] = (await sql.unsafe(
+      `SELECT ${cols.map(qident).join(', ')} FROM livre_auth.${qident(table)}
+       WHERE id::text = $1 LIMIT 1`,
+      [id]
+    )) as any[];
+    if (!row) return reply.code(404).send({ error: 'Registro não encontrado' });
+    return { data: row };
+  } catch (err: any) {
+    return reply.code(400).send({ error: err.message });
+  }
+});
+
+app.post('/public/:table', async (request: any, reply) => {
+  if (!(await requireApiToken(request, reply))) return;
+  const { table } = request.params;
+  if (!(await requirePublicTable(table, reply))) return;
+
+  const body = request.body || {};
+  const allCols = await columnNames(table);
+  const cols = allCols.filter((n) => !HIDDEN_COLUMNS.has(n));
+  const keys = Object.keys(body).filter(
+    (k) => cols.includes(k) && body[k] !== '' && body[k] !== null && body[k] !== undefined
+  );
+  if (!keys.length) return reply.code(400).send({ error: 'Nenhum campo válido informado' });
+
+  try {
+    const [row] = (await sql.unsafe(
+      `INSERT INTO livre_auth.${qident(table)} (${keys.map(qident).join(', ')})
+       VALUES (${keys.map((_, i) => `$${i + 1}`).join(', ')})
+       RETURNING ${cols.map(qident).join(', ')}`,
+      keys.map((k) => body[k])
+    )) as any[];
+    return { data: row };
+  } catch (err: any) {
+    return reply.code(400).send({ error: err.message });
+  }
+});
+
+app.patch('/public/:table/:id', async (request: any, reply) => {
+  if (!(await requireApiToken(request, reply))) return;
+  const { table, id } = request.params;
+  if (!(await requirePublicTable(table, reply))) return;
+
+  const body = request.body || {};
+  const allCols = await columnNames(table);
+  const cols = allCols.filter((n) => !HIDDEN_COLUMNS.has(n) && n !== 'id');
+  const keys = Object.keys(body).filter((k) => cols.includes(k));
+  if (!keys.length) return reply.code(400).send({ error: 'Nenhum campo válido informado' });
+
+  const values = keys.map((k) => body[k]);
+  values.push(id);
+  try {
+    const [row] = (await sql.unsafe(
+      `UPDATE livre_auth.${qident(table)}
+       SET ${keys.map((k, i) => `${qident(k)} = $${i + 1}`).join(', ')}
+       WHERE id::text = $${values.length}
+       RETURNING ${cols.map(qident).join(', ')}`,
+      values
+    )) as any[];
+    if (!row) return reply.code(404).send({ error: 'Registro não encontrado' });
+    return { data: row };
+  } catch (err: any) {
+    return reply.code(400).send({ error: err.message });
+  }
+});
+
+app.delete('/public/:table/:id', async (request: any, reply) => {
+  if (!(await requireApiToken(request, reply))) return;
+  const { table, id } = request.params;
+  if (!(await requirePublicTable(table, reply))) return;
+
+  try {
+    const [row] = (await sql.unsafe(
+      `DELETE FROM livre_auth.${qident(table)} WHERE id::text = $1 RETURNING id`,
+      [id]
+    )) as any[];
+    if (!row) return reply.code(404).send({ error: 'Registro não encontrado' });
+    return { ok: true };
+  } catch (err: any) {
+    return reply.code(400).send({ error: err.message });
+  }
+});
+
+// Workflow API (placeholder funcional: recebe POST e devolve o payload)
+app.post('/public/wf/:name', async (request: any, reply) => {
+  if (!(await requireApiToken(request, reply))) return;
+  const settings = await getApiSettings();
+  if (!settings?.workflow_api_enabled) {
+    return reply.code(403).send({ error: 'Workflow API desabilitada' });
+  }
+  return {
+    ok: true,
+    workflow: request.params.name,
+    received: request.body ?? null,
+    timestamp: new Date().toISOString(),
+  };
 });
 
 // Inicialização

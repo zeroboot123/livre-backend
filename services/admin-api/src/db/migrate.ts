@@ -61,4 +61,47 @@ export async function runMigrations() {
     CREATE INDEX IF NOT EXISTS idx_files_attached
       ON livre_auth.files(attached_table, attached_id)
   `;
+
+  // ── API pública (Data API + tokens) ────────────────────────
+  await sql`
+    CREATE TABLE IF NOT EXISTS livre_auth.api_settings (
+      id                        int PRIMARY KEY DEFAULT 1,
+      data_api_enabled          boolean NOT NULL DEFAULT false,
+      workflow_api_enabled      boolean NOT NULL DEFAULT false,
+      workflow_root_url         text,
+      use_display_instead_of_id boolean NOT NULL DEFAULT false,
+      hide_swagger              boolean NOT NULL DEFAULT false,
+      updated_at                timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT api_settings_singleton CHECK (id = 1)
+    )
+  `;
+
+  await sql`
+    INSERT INTO livre_auth.api_settings (id) VALUES (1)
+    ON CONFLICT (id) DO NOTHING
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS livre_auth.api_exposed_tables (
+      table_name text PRIMARY KEY,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS livre_auth.api_tokens (
+      id           uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+      name         text NOT NULL,
+      token_prefix text NOT NULL,
+      token_hash   text NOT NULL,
+      created_at   timestamptz NOT NULL DEFAULT now(),
+      last_used_at timestamptz,
+      revoked      boolean NOT NULL DEFAULT false
+    )
+  `;
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_api_tokens_hash
+      ON livre_auth.api_tokens(token_hash)
+  `;
 }
