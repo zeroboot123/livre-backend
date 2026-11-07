@@ -1,0 +1,61 @@
+# ==============================================================
+# LIVRE BACKEND - Configuração para Traefik (EasyPanel)
+# ==============================================================
+# Este arquivo contém as labels Traefik para integração
+# com o proxy reverso gerenciado pelo EasyPanel.
+#
+# Adicione estas labels aos serviços no docker-compose.yml
+# quando for fazer deploy na VPS com EasyPanel.
+# ==============================================================
+
+# Labels a serem adicionadas em cada serviço:
+
+# ─── Para o serviço auth-service ───
+# labels:
+#   - "traefik.enable=true"
+#   - "traefik.http.routers.livre-auth.rule=Host(`api.livrebackend.com.br`) && PathPrefix(`/auth`)"
+#   - "traefik.http.routers.livre-auth.entrypoints=websecure"
+#   - "traefik.http.routers.livre-auth.tls.certresolver=letsencrypt"
+#   - "traefik.http.services.livre-auth.loadbalancer.server.port=3001"
+#   - "traefik.http.middlewares.livre-auth-strip.stripprefix.prefixes=/auth"
+#   - "traefik.http.routers.livre-auth.middlewares=livre-auth-strip"
+
+# ─── Para o serviço postgrest ───
+# labels:
+#   - "traefik.enable=true"
+#   - "traefik.http.routers.livre-postgrest.rule=Host(`api.livrebackend.com.br`) && PathPrefix(`/api/rest`)"
+#   - "traefik.http.routers.livre-postgrest.entrypoints=websecure"
+#   - "traefik.http.routers.livre-postgrest.tls.certresolver=letsencrypt"
+#   - "traefik.http.services.livre-postgrest.loadbalancer.server.port=3000"
+#   - "traefik.http.middlewares.livre-postgrest-strip.stripprefix.prefixes=/api/rest"
+#   - "traefik.http.routers.livre-postgrest.middlewares=livre-postgrest-strip"
+
+# ─── Para o serviço admin-panel ───
+# labels:
+#   - "traefik.enable=true"
+#   - "traefik.http.routers.livre-admin.rule=Host(`api.livrebackend.com.br`) && PathPrefix(`/admin`)"
+#   - "traefik.http.routers.livre-admin.entrypoints=websecure"
+#   - "traefik.http.routers.livre-admin.tls.certresolver=letsencrypt"
+#   - "traefik.http.services.livre-admin.loadbalancer.server.port=3003"
+#   - "traefik.http.middlewares.livre-admin-strip.stripprefix.prefixes=/admin"
+#   - "traefik.http.routers.livre-admin.middlewares=livre-admin-strip"
+
+# ─── Para o serviço admin-api ───
+# labels:
+#   - "traefik.enable=true"
+#   - "traefik.http.routers.livre-admin-api.rule=Host(`api.livrebackend.com.br`) && PathPrefix(`/admin/api`)"
+#   - "traefik.http.routers.livre-admin-api.entrypoints=websecure"
+#   - "traefik.http.routers.livre-admin-api.tls.certresolver=letsencrypt"
+#   - "traefik.http.services.livre-admin-api.loadbalancer.server.port=3002"
+#   - "traefik.http.middlewares.livre-admin-api-strip.stripprefix.prefixes=/admin/api"
+#   - "traefik.http.routers.livre-admin-api.middlewares=livre-admin-api-strip"
+
+# ─── Para o serviço visual-db ───
+# labels:
+#   - "traefik.enable=true"
+#   - "traefik.http.routers.livre-visual-db.rule=Host(`api.livrebackend.com.br`) && PathPrefix(`/admin/visual-db`)"
+#   - "traefik.http.routers.livre-visual-db.entrypoints=websecure"
+#   - "traefik.http.routers.livre-visual-db.tls.certresolver=letsencrypt"
+#   - "traefik.http.services.livre-visual-db.loadbalancer.server.port=3004"
+#   - "traefik.http.middlewares.livre-visual-db-strip.stripprefix.prefixes=/admin/visual-db"
+#   - "traefik.http.routers.livre-visual-db.middlewares=livre-visual-db-strip"

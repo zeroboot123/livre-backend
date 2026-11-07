@@ -1,0 +1,38 @@
+# Dependências
+node_modules/
+dist/
+.next/
+
+# Ambiente
+.env
+.env.local
+.env.production
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Docker
+.docker/
+
+# Logs
+*.log
+logs/
+
+# Backups (exceto exemplos)
+backups/
+!backups/.gitkeep
+
+# Chaves SSH
+*.pem
+*.key
+*.key.pub
+
+# TypeScript
+*.tsbuildinfo
