@@ -7,10 +7,12 @@ import { Modal } from '@/components/ui/Modal';
 import { Toast, type ToastKind } from '@/components/ui/Toast';
 import {
   addColumn,
+  columnTypeLabel,
   defaultLabel,
   deleteColumn,
   fetchColumns,
   fieldTypeLabel,
+  setColumnLogicalType,
   type DataColumn,
 } from '@/lib/data-api';
 
@@ -127,8 +129,21 @@ function DataTypesInner() {
     }
   };
 
-  const handleDeleteField = async (col: DataColumn) => {
-    if (!selected) return;
+  const handleLogicalTypeChange = async (value: string) => {
+    if (!selected || !activeField) return;
+    setSaving(true);
+    try {
+      await setColumnLogicalType(selected, activeField, value);
+      notify('Tipo do campo atualizado');
+      load();
+    } catch (err: any) {
+      notify(err?.message || 'Erro ao atualizar tipo', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteField = async (col: DataColumn) => {    if (!selected) return;
     if (col.primary || col.name === 'id') {
       notify('Não é possível remover a chave primária', 'error');
       return;
@@ -224,7 +239,7 @@ function DataTypesInner() {
                 )}
                 {!loading &&
                   columns.map((col, index) => {
-                    const label = fieldTypeLabel(col.type);
+                    const label = columnTypeLabel(col);
                     const isActive = col.name === activeField;
                     return (
                       <tr
@@ -333,13 +348,36 @@ function DataTypesInner() {
                 <div className="flex items-center gap-2">
                   <span
                     className={`inline-flex rounded px-2 py-1 text-[11px] font-medium ${
-                      typeBadge[fieldTypeLabel(active.type)] || 'bg-slate-100 text-slate-600'
+                      typeBadge[columnTypeLabel(active)] || 'bg-slate-100 text-slate-600'
                     }`}
                   >
-                    {fieldTypeLabel(active.type)}
+                    {columnTypeLabel(active)}
                   </span>
                   <span className="text-[10px] text-slate-400">{active.type}</span>
                 </div>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-[11px] font-medium text-slate-500">
+                  Tipo lógico
+                </label>
+                <select
+                  value={(active.logical_type || fieldTypeLabel(active.type)).toLowerCase()}
+                  onChange={(e) => handleLogicalTypeChange(e.target.value)}
+                  disabled={saving}
+                  className="w-full rounded border border-slate-200 px-2.5 py-1.5 text-xs text-slate-700 focus:border-blue-500 focus:outline-none disabled:opacity-50"
+                >
+                  <option value="text">Text</option>
+                  <option value="number">Number</option>
+                  <option value="boolean">Boolean</option>
+                  <option value="date">Date</option>
+                  <option value="json">JSON</option>
+                  <option value="uuid">UUID</option>
+                  <option value="file">File</option>
+                </select>
+                <p className="mt-1 text-[10px] text-slate-400">
+                  Define como o campo aparece. “File” é armazenado como texto (URL/chave).
+                </p>
               </div>
 
               <div>

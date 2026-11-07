@@ -199,11 +199,12 @@ app.get('/schema/:table/columns', async (request: any, reply) => {
     return reply.code(404).send({ error: 'Tabela não encontrada' });
   }
 
-  const columns = await sql`
+  const columns = (await sql`
     SELECT a.attname AS name,
       pg_catalog.format_type(a.atttypid, a.atttypmod) AS type,
       a.attnotnull AS required,
       pg_get_expr(d.adbin, d.adrelid) AS default_value,
+      col_description(a.attrelid, a.attnum) AS comment,
       EXISTS (
         SELECT 1 FROM pg_constraint con
         WHERE con.conrelid = a.attrelid AND con.contype = 'p'
@@ -228,9 +229,16 @@ app.get('/schema/:table/columns', async (request: any, reply) => {
     WHERE a.attrelid = ${'livre_auth.' + qident(table)}::regclass
       AND a.attnum > 0 AND NOT a.attisdropped
     ORDER BY a.attnum
-  `;
+  `) as any[];
 
-  return { columns };
+  // O tipo lógico (ex.: "file") é persistido no comentário da coluna,
+  // pois o Postgres armazena arquivos como "text".
+  const withLogical = columns.map((c) => {
+    const match = /^livre_type:([a-z_]+)$/.exec(String(c.comment || ''));
+    return { ...c, logical_type: match ? match[1] : null };
+  });
+
+  return { columns: withLogical };
 });
 
 // Linhas de um data type (com busca e paginação)
@@ -409,9 +417,48 @@ app.post('/schema/:table/columns', async (request: any, reply) => {
   if (required) ddl += ' NOT NULL';
   if (unique) ddl += ' UNIQUE';
 
+  const logical = String(type || '').toLowerCase();
+
   try {
     await sql.unsafe(ddl);
+    // Persiste o tipo lógico (ex.: "file") no comentário da coluna,
+    // pois o Postgres armazena arquivos como "text".
+    try {
+      await sql.unsafe(
+        `COMMENT ON COLUMN livre_auth.${qident(table)}.${qident(name)} IS 'livre_type:${logical}'`
+      );
+    } catch {
+      /* comentário é opcional */
+    }
     return { ok: true };
+  } catch (err: any) {
+    return reply.code(400).send({ error: err.message });
+  }
+});
+
+// Atualiza o tipo lógico de um campo existente (ex.: marcar um "text" como "file")
+app.patch('/schema/:table/columns/:column', async (request: any, reply) => {
+  const { table, column } = request.params;
+  if (!(await tableExists(table))) {
+    return reply.code(404).send({ error: 'Tabela não encontrada' });
+  }
+
+  const cols = await columnNames(table);
+  if (!cols.includes(column)) {
+    return reply.code(404).send({ error: 'Campo não encontrado' });
+  }
+
+  const logical = String(request.body?.logical_type || '').toLowerCase();
+  const allowed = ['text', 'number', 'boolean', 'date', 'timestamp', 'json', 'uuid', 'file'];
+  if (!allowed.includes(logical)) {
+    return reply.code(400).send({ error: 'Tipo lógico inválido' });
+  }
+
+  try {
+    await sql.unsafe(
+      `COMMENT ON COLUMN livre_auth.${qident(table)}.${qident(column)} IS 'livre_type:${logical}'`
+    );
+    return { ok: true, logical_type: logical };
   } catch (err: any) {
     return reply.code(400).send({ error: err.message });
   }

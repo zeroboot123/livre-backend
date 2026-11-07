@@ -14,6 +14,7 @@ export interface DataColumn {
   primary: boolean;
   unique: boolean;
   references?: string | null;
+  logical_type?: string | null;
 }
 
 export interface DataRow {
@@ -96,6 +97,17 @@ export async function deleteColumn(table: string, column: string) {
   );
 }
 
+export async function setColumnLogicalType(
+  table: string,
+  column: string,
+  logicalType: string
+) {
+  return apiFetch(
+    `/schema/${encodeURIComponent(table)}/columns/${encodeURIComponent(column)}`,
+    { method: 'PATCH', body: JSON.stringify({ logical_type: logicalType }) }
+  );
+}
+
 // Human-friendly type label (Bubble style)
 export function fieldTypeLabel(type: string): string {
   const t = (type || '').toLowerCase();
@@ -105,7 +117,25 @@ export function fieldTypeLabel(type: string): string {
   if (t.startsWith('numeric') || t.startsWith('integer') || t.startsWith('bigint') || t.startsWith('smallint') || t.startsWith('real') || t.startsWith('double')) return 'Number';
   if (t.startsWith('bool')) return 'Boolean';
   if (t.startsWith('json')) return 'JSON';
+  if (t === 'file') return 'File';
   return type;
+}
+
+// Rótulo do campo priorizando o tipo lógico (ex.: "file" gravado como text).
+export function columnTypeLabel(col: { type: string; logical_type?: string | null }): string {
+  const logical = (col.logical_type || '').toLowerCase();
+  const map: Record<string, string> = {
+    text: 'Text',
+    number: 'Number',
+    boolean: 'Boolean',
+    date: 'Date',
+    timestamp: 'Date',
+    json: 'JSON',
+    uuid: 'UUID',
+    file: 'File',
+  };
+  if (logical && map[logical]) return map[logical];
+  return fieldTypeLabel(col.type);
 }
 
 export function defaultLabel(defaultValue: string | null): string {
