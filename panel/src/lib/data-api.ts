@@ -399,3 +399,42 @@ export async function createApiToken(
 export async function revokeApiToken(id: string) {
   return apiFetch(`/api-tokens/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
+
+// ============================================================
+// RLS (privacidade por linha)
+// ============================================================
+export interface RlsRule {
+  id: string;
+  table_name: string;
+  field: string;
+  operator: string;
+  value: string | null;
+  created_at: string;
+}
+
+export async function fetchRls(): Promise<{
+  rules: RlsRule[];
+  rlsEnabled: Record<string, boolean>;
+}> {
+  return apiFetch('/rls');
+}
+
+export async function createRlsRule(values: {
+  table_name: string;
+  field: string;
+  operator: string;
+  value: string | null;
+}): Promise<{ rule: RlsRule }> {
+  return apiFetch('/rls', {
+    method: 'POST',
+    body: JSON.stringify(values),
+  });
+}
+
+export async function deleteRlsRule(id: string) {
+  return apiFetch(`/rls/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export async function makeTablePublic(table: string) {
+  return apiFetch(`/rls/${encodeURIComponent(table)}/public`, { method: 'POST' });
+}

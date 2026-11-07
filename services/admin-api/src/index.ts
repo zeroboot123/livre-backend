@@ -914,29 +914,133 @@ async function isTableExposed(table: string) {
   return !!row;
 }
 
-async function authenticateApiToken(request: any): Promise<boolean> {
+async function authenticateApiToken(request: any) {
   const raw = request.headers['x-api-key'] || request.headers.authorization;
   let token = '';
   if (typeof raw === 'string') {
     token = raw.startsWith('Bearer ') ? raw.slice(7) : raw;
   }
-  if (!token) return false;
+  if (!token) return null;
 
   const [row] = (await sql`
-    SELECT id FROM livre_auth.api_tokens
+    SELECT id, context_user_id, context_tenant_id
+    FROM livre_auth.api_tokens
     WHERE token_hash = ${hashApiToken(token)} AND revoked = FALSE
     LIMIT 1
   `) as any[];
-  if (!row) return false;
+  if (!row) return null;
 
   await sql`UPDATE livre_auth.api_tokens SET last_used_at = NOW() WHERE id = ${row.id}`;
-  return true;
+  return row;
 }
 
-async function requireApiToken(request: any, reply: any): Promise<boolean> {
-  if (await authenticateApiToken(request)) return true;
-  reply.code(401).send({ error: 'API token inválido ou ausente' });
-  return false;
+async function requireApiToken(request: any, reply: any) {
+  const row = await authenticateApiToken(request);
+  if (!row) {
+    reply.code(401).send({ error: 'API token inválido ou ausente' });
+    return null;
+  }
+  return row;
+}
+
+// ---- RLS: geração de políticas a partir das regras ----
+const RLS_OPERATORS = new Set([
+  '=', '!=', '>', '<', '>=', '<=', 'contains', 'is_null', 'is_not_null',
+]);
+
+function rlsCondition(rule: { field: string; operator: string; value: string | null }): string {
+  const f = `${qident(rule.field)}::text`;
+  const op = rule.operator;
+  const v = rule.value ?? '';
+
+  if (op === 'is_null') return `${qident(rule.field)} IS NULL`;
+  if (op === 'is_not_null') return `${qident(rule.field)} IS NOT NULL`;
+
+  // Valores dinâmicos ligados ao contexto do token
+  if (v === '{{current_user}}') {
+    const ctx = `current_setting('app.current_user_id', true)`;
+    if (op === '!=') return `${f} <> ${ctx}`;
+    return `${f} = ${ctx}`;
+  }
+  if (v === '{{current_tenant}}') {
+    const ctx = `current_setting('app.current_tenant_id', true)`;
+    if (op === '!=') return `${f} <> ${ctx}`;
+    return `${f} = ${ctx}`;
+  }
+
+  const safe = v.replace(/'/g, "''");
+  switch (op) {
+    case '=': return `${f} = '${safe}'`;
+    case '!=': return `${f} <> '${safe}'`;
+    case '>': return `${qident(rule.field)} > '${safe}'`;
+    case '<': return `${qident(rule.field)} < '${safe}'`;
+    case '>=': return `${qident(rule.field)} >= '${safe}'`;
+    case '<=': return `${qident(rule.field)} <= '${safe}'`;
+    case 'contains': return `${f} ILIKE '%${safe}%'`;
+    default: return 'TRUE';
+  }
+}
+
+async function grantTableToAuthenticated(table: string) {
+  await sql.unsafe(
+    `GRANT SELECT, INSERT, UPDATE, DELETE ON livre_auth.${qident(table)} TO authenticated`
+  );
+}
+
+// Aplica as regras de uma tabela como politicas RLS reais.
+async function applyRlsPolicies(table: string) {
+  // Remove politicas antigas da tabela
+  const policies = (await sql`
+    SELECT policyname FROM pg_policies
+    WHERE schemaname = 'livre_auth' AND tablename = ${table}
+  `) as any[];
+  for (const p of policies) {
+    await sql.unsafe(
+      `DROP POLICY IF EXISTS ${qident(p.policyname)} ON livre_auth.${qident(table)}`
+    );
+  }
+
+  const rules = (await sql`
+    SELECT field, operator, value FROM livre_auth.rls_rules
+    WHERE table_name = ${table} ORDER BY created_at
+  `) as any[];
+
+  if (!rules.length) {
+    // Sem regras = publicamente visivel (RLS desligado)
+    await sql.unsafe(
+      `ALTER TABLE livre_auth.${qident(table)} DISABLE ROW LEVEL SECURITY`
+    );
+    await grantTableToAuthenticated(table);
+    return { rls_enabled: false, rules: 0 };
+  }
+
+  const cond = rules.map(rlsCondition).join(' AND ');
+  await grantTableToAuthenticated(table);
+  await sql.unsafe(`ALTER TABLE livre_auth.${qident(table)} ENABLE ROW LEVEL SECURITY`);
+  await sql.unsafe(
+    `CREATE POLICY livre_rls ON livre_auth.${qident(table)}
+       FOR ALL TO authenticated USING (${cond}) WITH CHECK (${cond})`
+  );
+  return { rls_enabled: true, rules: rules.length };
+}
+
+// Executa uma query com o contexto do token e o role 'authenticated'
+// (nao-superusuario), para que o RLS seja realmente aplicado.
+async function withRlsContext(
+  tokenRow: { context_user_id?: string | null; context_tenant_id?: string | null },
+  fn: (tx: any) => Promise<any>
+): Promise<any> {
+  const result = await sql.begin(async (tx: any) => {
+    await tx`SET LOCAL ROLE authenticated`;
+    if (tokenRow.context_user_id) {
+      await tx`SELECT set_config('app.current_user_id', ${tokenRow.context_user_id}, true)`;
+    }
+    if (tokenRow.context_tenant_id) {
+      await tx`SELECT set_config('app.current_tenant_id', ${tokenRow.context_tenant_id}, true)`;
+    }
+    return fn(tx);
+  });
+  return result;
 }
 
 async function requirePublicTable(table: string, reply: any): Promise<boolean> {
@@ -963,7 +1067,8 @@ app.get('/api-settings', async () => {
     SELECT table_name FROM livre_auth.api_exposed_tables ORDER BY table_name
   `) as any[];
   const tokens = (await sql`
-    SELECT id, name, token_prefix, created_at, last_used_at, revoked
+    SELECT id, name, token_prefix, created_at, last_used_at, revoked,
+           context_user_id, context_tenant_id
     FROM livre_auth.api_tokens ORDER BY created_at DESC
   `) as any[];
   return {
@@ -1013,8 +1118,79 @@ app.put('/api-settings/tables', async (request: any, reply) => {
       INSERT INTO livre_auth.api_exposed_tables (table_name)
       VALUES (${t}) ON CONFLICT DO NOTHING
     `;
+    // Garante permissao ao role da API e aplica as regras RLS existentes.
+    await applyRlsPolicies(t);
   }
   return { exposedTables: valid };
+});
+
+// ---- RLS (privacidade por linha) ----
+app.get('/rls', async () => {
+  const rules = (await sql`
+    SELECT id, table_name, field, operator, value, created_at
+    FROM livre_auth.rls_rules ORDER BY table_name, created_at
+  `) as any[];
+
+  const rlsState = (await sql`
+    SELECT c.relname AS table_name, c.relrowsecurity AS enabled
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'livre_auth' AND c.relkind = 'r'
+  `) as any[];
+
+  const enabledMap: Record<string, boolean> = {};
+  for (const r of rlsState) enabledMap[r.table_name] = r.enabled;
+
+  return { rules, rlsEnabled: enabledMap };
+});
+
+app.post('/rls', async (request: any, reply) => {
+  const table = String(request.body?.table_name || '').trim();
+  const field = String(request.body?.field || '').trim();
+  const operator = String(request.body?.operator || '').trim();
+  const value = request.body?.value === undefined || request.body?.value === null
+    ? null
+    : String(request.body.value);
+
+  if (!(await tableExists(table))) {
+    return reply.code(404).send({ error: 'Tabela não encontrada' });
+  }
+  const cols = await columnNames(table);
+  if (!cols.includes(field)) {
+    return reply.code(400).send({ error: 'Campo não encontrado' });
+  }
+  if (!RLS_OPERATORS.has(operator)) {
+    return reply.code(400).send({ error: 'Operador inválido' });
+  }
+
+  const [rule] = (await sql`
+    INSERT INTO livre_auth.rls_rules (table_name, field, operator, value)
+    VALUES (${table}, ${field}, ${operator}, ${value})
+    RETURNING id, table_name, field, operator, value, created_at
+  `) as any[];
+
+  const applied = await applyRlsPolicies(table);
+  return { rule, applied };
+});
+
+app.delete('/rls/:id', async (request: any, reply) => {
+  const [rule] = (await sql`
+    DELETE FROM livre_auth.rls_rules WHERE id = ${request.params.id}
+    RETURNING table_name
+  `) as any[];
+  if (!rule) return reply.code(404).send({ error: 'Regra não encontrada' });
+  const applied = await applyRlsPolicies(rule.table_name);
+  return { ok: true, applied };
+});
+
+// Torna a tabela publicamente visivel (remove regras e desliga RLS)
+app.post('/rls/:table/public', async (request: any, reply) => {
+  const { table } = request.params;
+  if (!(await tableExists(table))) {
+    return reply.code(404).send({ error: 'Tabela não encontrada' });
+  }
+  await sql`DELETE FROM livre_auth.rls_rules WHERE table_name = ${table}`;
+  const applied = await applyRlsPolicies(table);
+  return { ok: true, applied };
 });
 
 // ---- Tokens (admin) ----
@@ -1023,10 +1199,23 @@ app.post('/api-tokens', async (request: any) => {
   const token = 'lv_' + randomBytes(24).toString('hex');
   const prefix = token.slice(0, 10) + '…';
 
+  const ctxUser =
+    typeof request.body?.context_user_id === 'string' &&
+    UUID_RE.test(request.body.context_user_id)
+      ? request.body.context_user_id
+      : null;
+  const ctxTenant =
+    typeof request.body?.context_tenant_id === 'string' &&
+    UUID_RE.test(request.body.context_tenant_id)
+      ? request.body.context_tenant_id
+      : null;
+
   const [apiToken] = (await sql`
-    INSERT INTO livre_auth.api_tokens (name, token_prefix, token_hash)
-    VALUES (${name}, ${prefix}, ${hashApiToken(token)})
-    RETURNING id, name, token_prefix, created_at, last_used_at, revoked
+    INSERT INTO livre_auth.api_tokens
+      (name, token_prefix, token_hash, context_user_id, context_tenant_id)
+    VALUES (${name}, ${prefix}, ${hashApiToken(token)}, ${ctxUser}::uuid, ${ctxTenant}::uuid)
+    RETURNING id, name, token_prefix, created_at, last_used_at, revoked,
+              context_user_id, context_tenant_id
   `) as any[];
 
   // O token em texto puro só é retornado UMA vez.
@@ -1042,9 +1231,10 @@ app.delete('/api-tokens/:id', async (request: any, reply) => {
   return { ok: true };
 });
 
-// ---- Endpoints públicos (exigem token) ----
+// ---- Endpoints públicos (exigem token; sujeitos a RLS) ----
 app.get('/public/_meta', async (request: any, reply) => {
-  if (!(await requireApiToken(request, reply))) return;
+  const tokenRow = await requireApiToken(request, reply);
+  if (!tokenRow) return;
   const settings = await getApiSettings();
   const tables = (await sql`
     SELECT table_name FROM livre_auth.api_exposed_tables ORDER BY table_name
@@ -1057,7 +1247,8 @@ app.get('/public/_meta', async (request: any, reply) => {
 });
 
 app.get('/public/:table', async (request: any, reply) => {
-  if (!(await requireApiToken(request, reply))) return;
+  const tokenRow = await requireApiToken(request, reply);
+  if (!tokenRow) return;
   const { table } = request.params;
   if (!(await requirePublicTable(table, reply))) return;
 
@@ -1080,34 +1271,41 @@ app.get('/public/:table', async (request: any, reply) => {
   const orderCol = allCols.includes('id') ? qident('id') : qident(cols[0]);
 
   try {
-    const rows = await sql.unsafe(
-      `SELECT ${select} FROM livre_auth.${qident(table)} ${where}
-       ORDER BY ${orderCol} DESC LIMIT ${limit} OFFSET ${offset}`,
-      params
-    );
-    const [countRow] = (await sql.unsafe(
-      `SELECT count(*)::int AS count FROM livre_auth.${qident(table)} ${where}`,
-      params
-    )) as any[];
-    return { data: rows, total: countRow.count, limit, offset };
+    const result = await withRlsContext(tokenRow, async (tx) => {
+      const rows = await tx.unsafe(
+        `SELECT ${select} FROM livre_auth.${qident(table)} ${where}
+         ORDER BY ${orderCol} DESC LIMIT ${limit} OFFSET ${offset}`,
+        params
+      );
+      const [countRow] = (await tx.unsafe(
+        `SELECT count(*)::int AS count FROM livre_auth.${qident(table)} ${where}`,
+        params
+      )) as any[];
+      return { rows, total: countRow.count };
+    });
+    return { data: result.rows, total: result.total, limit, offset };
   } catch (err: any) {
     return reply.code(400).send({ error: err.message });
   }
 });
 
 app.get('/public/:table/:id', async (request: any, reply) => {
-  if (!(await requireApiToken(request, reply))) return;
+  const tokenRow = await requireApiToken(request, reply);
+  if (!tokenRow) return;
   const { table, id } = request.params;
   if (!(await requirePublicTable(table, reply))) return;
 
   const allCols = await columnNames(table);
   const cols = allCols.filter((n) => !HIDDEN_COLUMNS.has(n));
   try {
-    const [row] = (await sql.unsafe(
-      `SELECT ${cols.map(qident).join(', ')} FROM livre_auth.${qident(table)}
-       WHERE id::text = $1 LIMIT 1`,
-      [id]
-    )) as any[];
+    const row = await withRlsContext(tokenRow, async (tx) => {
+      const [r] = (await tx.unsafe(
+        `SELECT ${cols.map(qident).join(', ')} FROM livre_auth.${qident(table)}
+         WHERE id::text = $1 LIMIT 1`,
+        [id]
+      )) as any[];
+      return r;
+    });
     if (!row) return reply.code(404).send({ error: 'Registro não encontrado' });
     return { data: row };
   } catch (err: any) {
@@ -1116,7 +1314,8 @@ app.get('/public/:table/:id', async (request: any, reply) => {
 });
 
 app.post('/public/:table', async (request: any, reply) => {
-  if (!(await requireApiToken(request, reply))) return;
+  const tokenRow = await requireApiToken(request, reply);
+  if (!tokenRow) return;
   const { table } = request.params;
   if (!(await requirePublicTable(table, reply))) return;
 
@@ -1129,12 +1328,15 @@ app.post('/public/:table', async (request: any, reply) => {
   if (!keys.length) return reply.code(400).send({ error: 'Nenhum campo válido informado' });
 
   try {
-    const [row] = (await sql.unsafe(
-      `INSERT INTO livre_auth.${qident(table)} (${keys.map(qident).join(', ')})
-       VALUES (${keys.map((_, i) => `$${i + 1}`).join(', ')})
-       RETURNING ${cols.map(qident).join(', ')}`,
-      keys.map((k) => body[k])
-    )) as any[];
+    const row = await withRlsContext(tokenRow, async (tx) => {
+      const [r] = (await tx.unsafe(
+        `INSERT INTO livre_auth.${qident(table)} (${keys.map(qident).join(', ')})
+         VALUES (${keys.map((_, i) => `$${i + 1}`).join(', ')})
+         RETURNING ${cols.map(qident).join(', ')}`,
+        keys.map((k) => body[k])
+      )) as any[];
+      return r;
+    });
     return { data: row };
   } catch (err: any) {
     return reply.code(400).send({ error: err.message });
@@ -1142,7 +1344,8 @@ app.post('/public/:table', async (request: any, reply) => {
 });
 
 app.patch('/public/:table/:id', async (request: any, reply) => {
-  if (!(await requireApiToken(request, reply))) return;
+  const tokenRow = await requireApiToken(request, reply);
+  if (!tokenRow) return;
   const { table, id } = request.params;
   if (!(await requirePublicTable(table, reply))) return;
 
@@ -1155,13 +1358,16 @@ app.patch('/public/:table/:id', async (request: any, reply) => {
   const values = keys.map((k) => body[k]);
   values.push(id);
   try {
-    const [row] = (await sql.unsafe(
-      `UPDATE livre_auth.${qident(table)}
-       SET ${keys.map((k, i) => `${qident(k)} = $${i + 1}`).join(', ')}
-       WHERE id::text = $${values.length}
-       RETURNING ${cols.map(qident).join(', ')}`,
-      values
-    )) as any[];
+    const row = await withRlsContext(tokenRow, async (tx) => {
+      const [r] = (await tx.unsafe(
+        `UPDATE livre_auth.${qident(table)}
+         SET ${keys.map((k, i) => `${qident(k)} = $${i + 1}`).join(', ')}
+         WHERE id::text = $${values.length}
+         RETURNING ${cols.map(qident).join(', ')}`,
+        values
+      )) as any[];
+      return r;
+    });
     if (!row) return reply.code(404).send({ error: 'Registro não encontrado' });
     return { data: row };
   } catch (err: any) {
@@ -1170,16 +1376,20 @@ app.patch('/public/:table/:id', async (request: any, reply) => {
 });
 
 app.delete('/public/:table/:id', async (request: any, reply) => {
-  if (!(await requireApiToken(request, reply))) return;
+  const tokenRow = await requireApiToken(request, reply);
+  if (!tokenRow) return;
   const { table, id } = request.params;
   if (!(await requirePublicTable(table, reply))) return;
 
   try {
-    const [row] = (await sql.unsafe(
-      `DELETE FROM livre_auth.${qident(table)} WHERE id::text = $1 RETURNING id`,
-      [id]
-    )) as any[];
-    if (!row) return reply.code(404).send({ error: 'Registro não encontrado' });
+    const deleted = await withRlsContext(tokenRow, async (tx) => {
+      const rows = (await tx.unsafe(
+        `DELETE FROM livre_auth.${qident(table)} WHERE id::text = $1 RETURNING id`,
+        [id]
+      )) as any[];
+      return rows.length;
+    });
+    if (!deleted) return reply.code(404).send({ error: 'Registro não encontrado' });
     return { ok: true };
   } catch (err: any) {
     return reply.code(400).send({ error: err.message });
@@ -1188,7 +1398,8 @@ app.delete('/public/:table/:id', async (request: any, reply) => {
 
 // Workflow API (placeholder funcional: recebe POST e devolve o payload)
 app.post('/public/wf/:name', async (request: any, reply) => {
-  if (!(await requireApiToken(request, reply))) return;
+  const tokenRow = await requireApiToken(request, reply);
+  if (!tokenRow) return;
   const settings = await getApiSettings();
   if (!settings?.workflow_api_enabled) {
     return reply.code(403).send({ error: 'Workflow API desabilitada' });

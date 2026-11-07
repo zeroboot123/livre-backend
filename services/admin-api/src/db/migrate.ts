@@ -104,4 +104,25 @@ export async function runMigrations() {
     CREATE INDEX IF NOT EXISTS idx_api_tokens_hash
       ON livre_auth.api_tokens(token_hash)
   `;
+
+  // Contexto opcional por token (para regras RLS com "usuário/tenant atual")
+  await sql`ALTER TABLE livre_auth.api_tokens ADD COLUMN IF NOT EXISTS context_user_id uuid`;
+  await sql`ALTER TABLE livre_auth.api_tokens ADD COLUMN IF NOT EXISTS context_tenant_id uuid`;
+
+  // ── RLS (regras de privacidade por linha) ──────────────────
+  await sql`
+    CREATE TABLE IF NOT EXISTS livre_auth.rls_rules (
+      id         uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+      table_name text NOT NULL,
+      field      text NOT NULL,
+      operator   text NOT NULL,
+      value      text,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_rls_rules_table
+      ON livre_auth.rls_rules(table_name)
+  `;
 }
