@@ -1,13 +1,14 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { ListTree, Pencil, Plus, KeyRound, Link2, Search } from 'lucide-react';
+import { ListTree, Pencil, Plus, KeyRound, Link2, Search, Trash2 } from 'lucide-react';
 import { DataShell, useData } from '@/components/data/data-shell';
 import { Modal } from '@/components/ui/Modal';
 import { Toast, type ToastKind } from '@/components/ui/Toast';
 import {
   addColumn,
   defaultLabel,
+  deleteColumn,
   fetchColumns,
   fieldTypeLabel,
   type DataColumn,
@@ -121,6 +122,33 @@ function DataTypesInner() {
       reloadTables();
     } catch (err: any) {
       setAddError(err?.message || 'Erro ao criar campo');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteField = async (col: DataColumn) => {
+    if (!selected) return;
+    if (col.primary || col.name === 'id') {
+      notify('Não é possível remover a chave primária', 'error');
+      return;
+    }
+    if (
+      !window.confirm(
+        `Remover o campo "${col.name}" de "${selected}"?\n\nOs dados dessa coluna serão perdidos permanentemente.`
+      )
+    ) {
+      return;
+    }
+    setSaving(true);
+    try {
+      await deleteColumn(selected, col.name);
+      notify(`Campo "${col.name}" removido`);
+      if (activeField === col.name) setActiveField('');
+      load();
+      reloadTables();
+    } catch (err: any) {
+      notify(err?.message || 'Erro ao remover campo', 'error');
     } finally {
       setSaving(false);
     }
@@ -243,16 +271,33 @@ function DataTypesInner() {
                           </div>
                         </td>
                         <td className="px-3 py-2 text-right">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setActiveField(col.name);
-                            }}
-                            title="Editar propriedades"
-                            className="rounded p-1 text-slate-400 hover:bg-blue-100 hover:text-blue-700"
-                          >
-                            <Pencil className="h-3.5 w-3.5" />
-                          </button>
+                          <div className="flex items-center justify-end gap-1">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setActiveField(col.name);
+                              }}
+                              title="Editar propriedades"
+                              className="rounded p-1 text-slate-400 hover:bg-blue-100 hover:text-blue-700"
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteField(col);
+                              }}
+                              disabled={col.primary || col.name === 'id' || saving}
+                              title={
+                                col.primary || col.name === 'id'
+                                  ? 'A chave primária não pode ser removida'
+                                  : 'Remover campo'
+                              }
+                              className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-30"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );

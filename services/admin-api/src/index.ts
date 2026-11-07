@@ -417,6 +417,55 @@ app.post('/schema/:table/columns', async (request: any, reply) => {
   }
 });
 
+// Remover campo (coluna) de um data type
+app.delete('/schema/:table/columns/:column', async (request: any, reply) => {
+  const { table, column } = request.params;
+  if (!(await tableExists(table))) {
+    return reply.code(404).send({ error: 'Tabela não encontrada' });
+  }
+
+  const cols = await columnNames(table);
+  if (!cols.includes(column)) {
+    return reply.code(404).send({ error: 'Campo não encontrado' });
+  }
+
+  // Não permitir remover a chave primária (nem a coluna "id").
+  const [info] = (await sql`
+    SELECT a.attname AS name,
+      EXISTS (
+        SELECT 1 FROM pg_constraint con
+        WHERE con.conrelid = a.attrelid AND con.contype = 'p'
+          AND a.attnum = ANY(con.conkey)
+      ) AS primary
+    FROM pg_attribute a
+    WHERE a.attrelid = ${'livre_auth.' + qident(table)}::regclass
+      AND a.attname = ${column}
+      AND a.attnum > 0 AND NOT a.attisdropped
+  `) as any[];
+
+  if (!info) return reply.code(404).send({ error: 'Campo não encontrado' });
+  if (info.primary || column === 'id') {
+    return reply.code(400).send({ error: 'Não é possível remover a chave primária' });
+  }
+
+  try {
+    // Sem CASCADE: se houver dependências (views, FKs), o Postgres recusa
+    // e devolvemos a mensagem, evitando apagar objetos por engano.
+    await sql.unsafe(
+      `ALTER TABLE livre_auth.${qident(table)} DROP COLUMN ${qident(column)}`
+    );
+    return { ok: true };
+  } catch (err: any) {
+    if (err?.code === '2BP01') {
+      return reply.code(409).send({
+        error:
+          'Este campo é usado por outro objeto (view, chave estrangeira, etc.). Remova a dependência antes.',
+      });
+    }
+    return reply.code(400).send({ error: err.message });
+  }
+});
+
 // ============================================================
 // OPTION SETS
 // ============================================================

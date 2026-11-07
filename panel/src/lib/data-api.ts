@@ -89,6 +89,13 @@ export async function addColumn(
   });
 }
 
+export async function deleteColumn(table: string, column: string) {
+  return apiFetch(
+    `/schema/${encodeURIComponent(table)}/columns/${encodeURIComponent(column)}`,
+    { method: 'DELETE' }
+  );
+}
+
 // Human-friendly type label (Bubble style)
 export function fieldTypeLabel(type: string): string {
   const t = (type || '').toLowerCase();
