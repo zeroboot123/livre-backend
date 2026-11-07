@@ -18,7 +18,20 @@ import {
   s3,
 } from './services/storage.js';
 
-const app = Fastify({ logger: false, bodyLimit: (MAX_UPLOAD_MB + 5) * 1024 * 1024 });
+const app = Fastify({
+  logger: false,
+  bodyLimit: (MAX_UPLOAD_MB + 5) * 1024 * 1024,
+  // Aceita tanto os caminhos internos ("/schema") quanto o caminho externo
+  // com o prefixo do proxy ("/admin/api/schema"). Assim o serviço funciona
+  // com ou sem "strip prefix" no proxy reverso (EasyPanel/Coolify/nginx).
+  rewriteUrl: (req) => {
+    const base = process.env.API_BASE_PATH || '/admin/api';
+    const url = req.url || '/';
+    if (url === base) return '/';
+    if (url.startsWith(base + '/')) return url.slice(base.length);
+    return url;
+  },
+});
 const PORT = parseInt(process.env.PORT || '3002', 10);
 
 await app.register(cors, { origin: true });
