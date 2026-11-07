@@ -77,6 +77,23 @@ docker compose ps
 - [Integração Flutter](docs/integrations/flutter.md)
 - [Integração Bubble](docs/integrations/bubble.md)
 
+## 🚢 Deploy (EasyPanel)
+
+Use o script seguro — ele **sempre aplica o `docker-compose.override.yml`**
+(preservando os aliases de rede do EasyPanel, evitando 502), espera o
+healthcheck e valida o HTTP no final:
+
+```bash
+# na VPS
+sudo ./scripts/deploy.sh                 # build + deploy de todos os apps
+sudo ./scripts/deploy.sh admin-api       # apenas um serviço
+sudo ./scripts/deploy.sh --status        # só verifica (não altera nada)
+sudo ./scripts/deploy.sh --no-build      # recria sem rebuildar
+```
+
+> ⚠️ `scripts/bootstrap-vps.sh` é apenas para provisionamento inicial
+> (gera senhas e sobrescreve o `.env`). Não use no dia a dia.
+
 ## 🛡️ Segurança
 
 - Senhas com hash **Argon2id**
