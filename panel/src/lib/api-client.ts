@@ -1,10 +1,13 @@
 export async function apiFetch(path: string, options?: RequestInit) {
   const token = typeof window !== 'undefined' ? localStorage.getItem('access_token') : null;
+  const projectId =
+    typeof window !== 'undefined' ? localStorage.getItem('livre_project_id') : null;
   const API = process.env.NEXT_PUBLIC_API_URL || 'https://livrebackend.gerbox.com.br/admin/api';
 
   // Só envia Content-Type quando existe corpo. Caso contrário (ex.: DELETE sem
   // body) o Fastify rejeita com FST_ERR_CTP_EMPTY_JSON_BODY.
   const headers: Record<string, string> = {
+    ...(projectId ? { 'X-Project-Id': projectId } : {}),
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...((options?.headers as Record<string, string>) || {}),
   };

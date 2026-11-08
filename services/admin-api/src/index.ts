@@ -72,21 +72,78 @@ app.get('/stats', async (request) => {
 
 // Listar projetos
 app.get('/projects', async () => {
-  const projects = await sql`SELECT * FROM livre_auth.projects ORDER BY created_at DESC`;
+  const projects = (await sql`
+    SELECT id, name, slug, description, schema_name, public_key, active, created_at, updated_at
+    FROM livre_auth.projects
+    ORDER BY created_at DESC
+  `) as any[];
   return { projects };
 });
 
-// Criar projeto
+const slugify = (value: string) =>
+  String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 50) || 'app';
+
+// Criar projeto + schema dedicado (o "database" daquele projeto)
 app.post('/projects', async (request: any, reply) => {
-  const { name, slug, description } = request.body || {};
-  if (!name || !slug) return reply.code(400).send({ error: 'Nome e slug são obrigatórios' });
-  
-  const [project] = await sql`
-    INSERT INTO livre_auth.projects (name, slug, description)
-    VALUES (${name}, ${slug}, ${description || null})
-    RETURNING *
-  `;
-  return { project };
+  const name = String(request.body?.name || '').trim();
+  if (!name) return reply.code(400).send({ error: 'O nome da aplicação é obrigatório' });
+  if (name.length > 120) {
+    return reply.code(400).send({ error: 'O nome deve ter no máximo 120 caracteres' });
+  }
+
+  const baseSlug = slugify(request.body?.slug || name);
+  let slug = baseSlug;
+  let attempt = 1;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const [clash] = (await sql`
+      SELECT 1 FROM livre_auth.projects WHERE slug = ${slug} LIMIT 1
+    `) as any[];
+    if (!clash) break;
+    slug = `${baseSlug}-${++attempt}`;
+  }
+
+  let schemaName = 'proj_' + slug.replace(/-/g, '_').replace(/[^a-z0-9_]/g, '_').slice(0, 45);
+  if (!/^[a-z_]/.test(schemaName)) schemaName = 'p_' + schemaName;
+  attempt = 1;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const [clash] = (await sql`
+      SELECT 1 FROM livre_auth.projects WHERE schema_name = ${schemaName} LIMIT 1
+    `) as any[];
+    if (!clash) break;
+    schemaName = schemaName.replace(/_\d+$/, '') + `_${++attempt}`;
+  }
+
+  try {
+    await sql.unsafe(`CREATE SCHEMA IF NOT EXISTS ${qident(schemaName)}`);
+    await sql.unsafe(`GRANT USAGE ON SCHEMA ${qident(schemaName)} TO authenticated`);
+
+    const [project] = (await sql`
+      INSERT INTO livre_auth.projects (name, slug, schema_name, description)
+      VALUES (${name}, ${slug}, ${schemaName}, ${request.body?.description || null})
+      RETURNING id, name, slug, description, schema_name, public_key, active, created_at, updated_at
+    `) as any[];
+
+    await sql`
+      INSERT INTO livre_auth.project_api_settings (project_id)
+      VALUES (${project.id})
+      ON CONFLICT (project_id) DO NOTHING
+    `;
+
+    return { project };
+  } catch (err: any) {
+    if (err?.code === '23505') {
+      return reply.code(409).send({ error: 'Já existe um projeto com esse nome' });
+    }
+    return reply.code(400).send({ error: err.message });
+  }
 });
 
 // Listar usuários
@@ -137,6 +194,7 @@ app.get('/project-users', async () => {
 // DATA EXPLORER (introspecção de schema + linhas reais)
 // ============================================================
 const qident = (id: string) => '"' + String(id).replace(/"/g, '""') + '"';
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const HIDDEN_COLUMNS = new Set([
   'password_hash',
@@ -145,36 +203,73 @@ const HIDDEN_COLUMNS = new Set([
   'email_token',
 ]);
 
-async function tableExists(table: string) {
+type ProjectContext = { projectId: string; schema: string };
+
+/** Busca o projeto ativo a partir do header X-Project-Id. */
+async function getProjectById(projectId: unknown) {
+  const id = Array.isArray(projectId) ? projectId[0] : projectId;
+  if (!id || !UUID_RE.test(String(id))) return null;
+  const [project] = (await sql`
+    SELECT id, name, slug, schema_name
+    FROM livre_auth.projects
+    WHERE id = ${String(id)}
+    LIMIT 1
+  `) as any[];
+  if (!project || !project.schema_name) return null;
+  return project;
+}
+
+/**
+ * Resolve o projeto da requisição. Sem projeto selecionado, responde 400
+ * (os endpoints de dados nunca usam o schema global por engano).
+ */
+async function requireProject(request: any, reply: any): Promise<ProjectContext | null> {
+  const project = await getProjectById(request.headers['x-project-id']);
+  if (!project) {
+    reply.code(400).send({
+      error: 'Nenhum projeto selecionado. Crie ou selecione um projeto.',
+    });
+    return null;
+  }
+  return { projectId: project.id, schema: project.schema_name };
+}
+
+async function tableExists(schema: string, table: string) {
   const rows = await sql`
     SELECT c.relname AS name
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = 'livre_auth' AND c.relname = ${table} AND c.relkind = 'r'
+    WHERE n.nspname = ${schema} AND c.relname = ${table} AND c.relkind = 'r'
   `;
   return rows.length > 0;
 }
 
-async function columnNames(table: string) {
+async function columnNames(schema: string, table: string) {
   const rows = await sql`
     SELECT a.attname AS name
     FROM pg_attribute a
-    WHERE a.attrelid = ${'livre_auth.' + qident(table)}::regclass
+    WHERE a.attrelid = ${`${qident(schema)}.${qident(table)}`}::regclass
       AND a.attnum > 0 AND NOT a.attisdropped
     ORDER BY a.attnum
   `;
   return rows.map((r: any) => r.name as string);
 }
 
-// Lista os data types (tabelas) com contagem real de registros
-app.get('/schema', async () => {
+// Lista os data types (tabelas) do projeto ativo com contagem real de registros
+app.get('/schema', async (request: any) => {
+  const project = await getProjectById(request.headers['x-project-id']);
+  if (!project) {
+    return { tables: [], project: null };
+  }
+  const schema = project.schema_name as string;
+
   const tables = (await sql`
     SELECT c.relname AS name,
       (SELECT count(*)::int FROM pg_attribute a
         WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped) AS columns
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = 'livre_auth' AND c.relkind = 'r'
+    WHERE n.nspname = ${schema} AND c.relkind = 'r'
     ORDER BY c.relname
   `) as any[];
 
@@ -183,7 +278,7 @@ app.get('/schema', async () => {
     let entries = 0;
     try {
       const [count] = await sql.unsafe(
-        `SELECT count(*)::int AS count FROM livre_auth.${qident(t.name)}`
+        `SELECT count(*)::int AS count FROM ${qident(schema)}.${qident(t.name)}`
       );
       entries = count.count;
     } catch {
@@ -191,13 +286,18 @@ app.get('/schema', async () => {
     }
     result.push({ name: t.name, columns: t.columns, entries });
   }
-  return { tables: result };
+  return {
+    tables: result,
+    project: { id: project.id, name: project.name, slug: project.slug },
+  };
 });
 
 // Colunas de um data type
 app.get('/schema/:table/columns', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const { table } = request.params;
-  if (!(await tableExists(table))) {
+  if (!(await tableExists(ctx.schema, table))) {
     return reply.code(404).send({ error: 'Tabela não encontrada' });
   }
 
@@ -228,7 +328,7 @@ app.get('/schema/:table/columns', async (request: any, reply) => {
       ) AS references
     FROM pg_attribute a
     LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
-    WHERE a.attrelid = ${'livre_auth.' + qident(table)}::regclass
+    WHERE a.attrelid = ${`${qident(ctx.schema)}.${qident(table)}`}::regclass
       AND a.attnum > 0 AND NOT a.attisdropped
     ORDER BY a.attnum
   `) as any[];
@@ -245,8 +345,10 @@ app.get('/schema/:table/columns', async (request: any, reply) => {
 
 // Linhas de um data type (com busca e paginação)
 app.get('/data/:table', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const { table } = request.params;
-  if (!(await tableExists(table))) {
+  if (!(await tableExists(ctx.schema, table))) {
     return reply.code(404).send({ error: 'Tabela não encontrada' });
   }
 
@@ -255,7 +357,7 @@ app.get('/data/:table', async (request: any, reply) => {
   const search = String(request.query.search || '').trim();
   const column = request.query.column ? String(request.query.column) : '';
 
-  const allCols = await columnNames(table);
+  const allCols = await columnNames(ctx.schema, table);
   const cols = allCols.filter((n) => !HIDDEN_COLUMNS.has(n));
   if (!cols.length) return { rows: [], total: 0, columns: [], limit, offset };
 
@@ -272,11 +374,11 @@ app.get('/data/:table', async (request: any, reply) => {
 
   try {
     const rows = await sql.unsafe(
-      `SELECT ${select} FROM livre_auth.${qident(table)} ${where} ORDER BY ${orderCol} DESC LIMIT ${limit} OFFSET ${offset}`,
+      `SELECT ${select} FROM ${qident(ctx.schema)}.${qident(table)} ${where} ORDER BY ${orderCol} DESC LIMIT ${limit} OFFSET ${offset}`,
       params
     );
     const [countRow] = await sql.unsafe(
-      `SELECT count(*)::int AS count FROM livre_auth.${qident(table)} ${where}`,
+      `SELECT count(*)::int AS count FROM ${qident(ctx.schema)}.${qident(table)} ${where}`,
       params
     );
     return { rows, total: countRow.count, columns: cols, limit, offset };
@@ -287,13 +389,15 @@ app.get('/data/:table', async (request: any, reply) => {
 
 // Inserir registro
 app.post('/data/:table', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const { table } = request.params;
-  if (!(await tableExists(table))) {
+  if (!(await tableExists(ctx.schema, table))) {
     return reply.code(404).send({ error: 'Tabela não encontrada' });
   }
 
   const body = request.body || {};
-  const allCols = await columnNames(table);
+  const allCols = await columnNames(ctx.schema, table);
   const cols = allCols.filter((n) => !HIDDEN_COLUMNS.has(n));
   const keys = Object.keys(body).filter(
     (k) => cols.includes(k) && body[k] !== '' && body[k] !== null && body[k] !== undefined
@@ -306,7 +410,7 @@ app.post('/data/:table', async (request: any, reply) => {
 
   try {
     const [row] = await sql.unsafe(
-      `INSERT INTO livre_auth.${qident(table)} (${keys.map(qident).join(', ')}) VALUES (${placeholders.join(', ')}) RETURNING ${returning}`,
+      `INSERT INTO ${qident(ctx.schema)}.${qident(table)} (${keys.map(qident).join(', ')}) VALUES (${placeholders.join(', ')}) RETURNING ${returning}`,
       values
     );
     return { row };
@@ -317,13 +421,15 @@ app.post('/data/:table', async (request: any, reply) => {
 
 // Atualizar registro
 app.patch('/data/:table/:id', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const { table, id } = request.params;
-  if (!(await tableExists(table))) {
+  if (!(await tableExists(ctx.schema, table))) {
     return reply.code(404).send({ error: 'Tabela não encontrada' });
   }
 
   const body = request.body || {};
-  const allCols = await columnNames(table);
+  const allCols = await columnNames(ctx.schema, table);
   const cols = allCols.filter((n) => !HIDDEN_COLUMNS.has(n) && n !== 'id');
   const keys = Object.keys(body).filter((k) => cols.includes(k));
   if (!keys.length) return reply.code(400).send({ error: 'Nenhum campo válido informado' });
@@ -335,7 +441,7 @@ app.patch('/data/:table/:id', async (request: any, reply) => {
 
   try {
     const [row] = await sql.unsafe(
-      `UPDATE livre_auth.${qident(table)} SET ${sets.join(', ')} WHERE id::text = $${values.length} RETURNING ${returning}`,
+      `UPDATE ${qident(ctx.schema)}.${qident(table)} SET ${sets.join(', ')} WHERE id::text = $${values.length} RETURNING ${returning}`,
       values
     );
     if (!row) return reply.code(404).send({ error: 'Registro não encontrado' });
@@ -347,8 +453,10 @@ app.patch('/data/:table/:id', async (request: any, reply) => {
 
 // Excluir registros
 app.delete('/data/:table', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const { table } = request.params;
-  if (!(await tableExists(table))) {
+  if (!(await tableExists(ctx.schema, table))) {
     return reply.code(404).send({ error: 'Tabela não encontrada' });
   }
 
@@ -359,7 +467,7 @@ app.delete('/data/:table', async (request: any, reply) => {
 
   try {
     const deleted = await sql.unsafe(
-      `DELETE FROM livre_auth.${qident(table)} WHERE id::text = ANY($1::text[]) RETURNING id`,
+      `DELETE FROM ${qident(ctx.schema)}.${qident(table)} WHERE id::text = ANY($1::text[]) RETURNING id`,
       [ids.map(String)]
     );
     return { deleted: deleted.length };
@@ -370,16 +478,18 @@ app.delete('/data/:table', async (request: any, reply) => {
 
 // Criar novo data type (tabela)
 app.post('/schema', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const { name } = request.body || {};
   if (!/^[a-z_][a-z0-9_]*$/i.test(name || '')) {
     return reply.code(400).send({ error: 'Nome do data type inválido' });
   }
-  if (await tableExists(name)) {
+  if (await tableExists(ctx.schema, name)) {
     return reply.code(409).send({ error: 'Já existe um data type com esse nome' });
   }
 
   try {
-    await sql.unsafe(`CREATE TABLE livre_auth.${qident(name)} (
+    await sql.unsafe(`CREATE TABLE ${qident(ctx.schema)}.${qident(name)} (
       id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
       created_at timestamptz DEFAULT NOW(),
       updated_at timestamptz DEFAULT NOW()
@@ -392,8 +502,10 @@ app.post('/schema', async (request: any, reply) => {
 
 // Adicionar campo (coluna) a um data type
 app.post('/schema/:table/columns', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const { table } = request.params;
-  if (!(await tableExists(table))) {
+  if (!(await tableExists(ctx.schema, table))) {
     return reply.code(404).send({ error: 'Tabela não encontrada' });
   }
 
@@ -415,7 +527,7 @@ app.post('/schema/:table/columns', async (request: any, reply) => {
   const pgType = typeMap[String(type || '').toLowerCase()];
   if (!pgType) return reply.code(400).send({ error: 'Tipo de campo inválido' });
 
-  let ddl = `ALTER TABLE livre_auth.${qident(table)} ADD COLUMN ${qident(name)} ${pgType}`;
+  let ddl = `ALTER TABLE ${qident(ctx.schema)}.${qident(table)} ADD COLUMN ${qident(name)} ${pgType}`;
   if (required) ddl += ' NOT NULL';
   if (unique) ddl += ' UNIQUE';
 
@@ -427,7 +539,7 @@ app.post('/schema/:table/columns', async (request: any, reply) => {
     // pois o Postgres armazena arquivos como "text".
     try {
       await sql.unsafe(
-        `COMMENT ON COLUMN livre_auth.${qident(table)}.${qident(name)} IS 'livre_type:${logical}'`
+        `COMMENT ON COLUMN ${qident(ctx.schema)}.${qident(table)}.${qident(name)} IS 'livre_type:${logical}'`
       );
     } catch {
       /* comentário é opcional */
@@ -440,12 +552,14 @@ app.post('/schema/:table/columns', async (request: any, reply) => {
 
 // Atualiza o tipo lógico de um campo existente (ex.: marcar um "text" como "file")
 app.patch('/schema/:table/columns/:column', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const { table, column } = request.params;
-  if (!(await tableExists(table))) {
+  if (!(await tableExists(ctx.schema, table))) {
     return reply.code(404).send({ error: 'Tabela não encontrada' });
   }
 
-  const cols = await columnNames(table);
+  const cols = await columnNames(ctx.schema, table);
   if (!cols.includes(column)) {
     return reply.code(404).send({ error: 'Campo não encontrado' });
   }
@@ -458,7 +572,7 @@ app.patch('/schema/:table/columns/:column', async (request: any, reply) => {
 
   try {
     await sql.unsafe(
-      `COMMENT ON COLUMN livre_auth.${qident(table)}.${qident(column)} IS 'livre_type:${logical}'`
+      `COMMENT ON COLUMN ${qident(ctx.schema)}.${qident(table)}.${qident(column)} IS 'livre_type:${logical}'`
     );
     return { ok: true, logical_type: logical };
   } catch (err: any) {
@@ -468,12 +582,14 @@ app.patch('/schema/:table/columns/:column', async (request: any, reply) => {
 
 // Remover campo (coluna) de um data type
 app.delete('/schema/:table/columns/:column', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const { table, column } = request.params;
-  if (!(await tableExists(table))) {
+  if (!(await tableExists(ctx.schema, table))) {
     return reply.code(404).send({ error: 'Tabela não encontrada' });
   }
 
-  const cols = await columnNames(table);
+  const cols = await columnNames(ctx.schema, table);
   if (!cols.includes(column)) {
     return reply.code(404).send({ error: 'Campo não encontrado' });
   }
@@ -487,7 +603,7 @@ app.delete('/schema/:table/columns/:column', async (request: any, reply) => {
           AND a.attnum = ANY(con.conkey)
       ) AS primary
     FROM pg_attribute a
-    WHERE a.attrelid = ${'livre_auth.' + qident(table)}::regclass
+    WHERE a.attrelid = ${`${qident(ctx.schema)}.${qident(table)}`}::regclass
       AND a.attname = ${column}
       AND a.attnum > 0 AND NOT a.attisdropped
   `) as any[];
@@ -501,7 +617,7 @@ app.delete('/schema/:table/columns/:column', async (request: any, reply) => {
     // Sem CASCADE: se houver dependências (views, FKs), o Postgres recusa
     // e devolvemos a mensagem, evitando apagar objetos por engano.
     await sql.unsafe(
-      `ALTER TABLE livre_auth.${qident(table)} DROP COLUMN ${qident(column)}`
+      `ALTER TABLE ${qident(ctx.schema)}.${qident(table)} DROP COLUMN ${qident(column)}`
     );
     return { ok: true };
   } catch (err: any) {
@@ -516,19 +632,33 @@ app.delete('/schema/:table/columns/:column', async (request: any, reply) => {
 });
 
 // ============================================================
-// OPTION SETS
+// OPTION SETS (por projeto)
 // ============================================================
-app.get('/option-sets', async () => {
+async function optionSetOwned(projectId: string, id: string) {
+  const [row] = (await sql`
+    SELECT 1 FROM livre_auth.option_sets
+    WHERE id = ${id} AND project_id = ${projectId} LIMIT 1
+  `) as any[];
+  return !!row;
+}
+
+app.get('/option-sets', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+
   const sets = (await sql`
     SELECT id, name, label, description, created_at, updated_at
     FROM livre_auth.option_sets
+    WHERE project_id = ${ctx.projectId}
     ORDER BY name
   `) as any[];
 
   const options = (await sql`
-    SELECT id, option_set_id, display, sort_order, metadata
-    FROM livre_auth.option_set_options
-    ORDER BY sort_order, created_at
+    SELECT o.id, o.option_set_id, o.display, o.sort_order, o.metadata
+    FROM livre_auth.option_set_options o
+    JOIN livre_auth.option_sets s ON s.id = o.option_set_id
+    WHERE s.project_id = ${ctx.projectId}
+    ORDER BY o.sort_order, o.created_at
   `) as any[];
 
   const bySet = new Map<string, any[]>();
@@ -544,6 +674,8 @@ app.get('/option-sets', async () => {
 });
 
 app.post('/option-sets', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const name = String(request.body?.name || '').trim();
   const label = request.body?.label ? String(request.body.label).trim() : null;
 
@@ -553,8 +685,8 @@ app.post('/option-sets', async (request: any, reply) => {
 
   try {
     const [optionSet] = await sql`
-      INSERT INTO livre_auth.option_sets (name, label)
-      VALUES (${name}, ${label})
+      INSERT INTO livre_auth.option_sets (project_id, name, label)
+      VALUES (${ctx.projectId}, ${name}, ${label})
       RETURNING id, name, label, description, created_at, updated_at
     `;
     return { optionSet: { ...optionSet, options: [] } };
@@ -567,6 +699,8 @@ app.post('/option-sets', async (request: any, reply) => {
 });
 
 app.patch('/option-sets/:id', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const { id } = request.params;
   const body = request.body || {};
   const sets: string[] = [];
@@ -592,12 +726,12 @@ app.patch('/option-sets/:id', async (request: any, reply) => {
     return reply.code(400).send({ error: 'Nenhum campo válido informado' });
   }
 
-  values.push(id);
+  values.push(id, ctx.projectId);
   try {
     const [optionSet] = await sql.unsafe(
       `UPDATE livre_auth.option_sets
          SET ${sets.join(', ')}, updated_at = NOW()
-       WHERE id = $${values.length}
+       WHERE id = $${values.length - 1} AND project_id = $${values.length}
        RETURNING id, name, label, description, created_at, updated_at`,
       values
     );
@@ -612,9 +746,11 @@ app.patch('/option-sets/:id', async (request: any, reply) => {
 });
 
 app.delete('/option-sets/:id', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const [row] = await sql`
     DELETE FROM livre_auth.option_sets
-    WHERE id = ${request.params.id}
+    WHERE id = ${request.params.id} AND project_id = ${ctx.projectId}
     RETURNING id
   `;
   if (!row) return reply.code(404).send({ error: 'Option set não encontrado' });
@@ -622,6 +758,8 @@ app.delete('/option-sets/:id', async (request: any, reply) => {
 });
 
 app.post('/option-sets/:id/options', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const { id } = request.params;
   const display = String(request.body?.display || '').trim();
   const metadata = request.body?.metadata ?? {};
@@ -642,7 +780,10 @@ app.post('/option-sets/:id/options', async (request: any, reply) => {
           WHERE option_set_id = ${id}::uuid
         ), 0),
         ${JSON.stringify(metadata)}::jsonb
-      WHERE EXISTS (SELECT 1 FROM livre_auth.option_sets WHERE id = ${id}::uuid)
+      WHERE EXISTS (
+        SELECT 1 FROM livre_auth.option_sets
+        WHERE id = ${id}::uuid AND project_id = ${ctx.projectId}
+      )
       RETURNING id, option_set_id, display, sort_order, metadata
     `;
     if (!option) return reply.code(404).send({ error: 'Option set não encontrado' });
@@ -656,7 +797,12 @@ app.post('/option-sets/:id/options', async (request: any, reply) => {
 });
 
 app.patch('/option-sets/:id/options/:optionId', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const { id, optionId } = request.params;
+  if (!(await optionSetOwned(ctx.projectId, id))) {
+    return reply.code(404).send({ error: 'Option set não encontrado' });
+  }
   const body = request.body || {};
   const sets: string[] = [];
   const values: any[] = [];
@@ -695,7 +841,12 @@ app.patch('/option-sets/:id/options/:optionId', async (request: any, reply) => {
 });
 
 app.delete('/option-sets/:id/options/:optionId', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const { id, optionId } = request.params;
+  if (!(await optionSetOwned(ctx.projectId, id))) {
+    return reply.code(404).send({ error: 'Option set não encontrado' });
+  }
   const [row] = await sql`
     DELETE FROM livre_auth.option_set_options
     WHERE id = ${optionId} AND option_set_id = ${id}
@@ -708,9 +859,10 @@ app.delete('/option-sets/:id/options/:optionId', async (request: any, reply) => 
 // ============================================================
 // FILE MANAGER (MinIO + metadados no Postgres)
 // ============================================================
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-app.get('/files', async (request: any) => {
+app.get('/files', async (request: any, reply: any) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const limit = Math.min(Math.max(parseInt(request.query.limit || '50', 10) || 50, 1), 200);
   const offset = Math.max(parseInt(request.query.offset || '0', 10) || 0, 0);
   const search = String(request.query.search || '').trim();
@@ -720,8 +872,8 @@ app.get('/files', async (request: any) => {
     String(request.query.private || '') === 'true' ||
     String(request.query.onlyPrivate || '') === 'true';
 
-  const params: any[] = [];
-  const where: string[] = [];
+  const params: any[] = [ctx.projectId];
+  const where: string[] = ['project_id = $1'];
 
   if (search) {
     params.push(exact ? search : '%' + search + '%');
@@ -761,6 +913,8 @@ app.get('/files', async (request: any) => {
 });
 
 app.post('/files', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   let data: any;
   try {
     data = await request.file();
@@ -827,10 +981,10 @@ app.post('/files', async (request: any, reply) => {
   try {
     const [file] = await sql`
       INSERT INTO livre_auth.files (
-        bucket, object_key, file_name, mime_type, size_bytes,
+        project_id, bucket, object_key, file_name, mime_type, size_bytes,
         status, is_private, uploaded_by, attached_table, attached_id
       ) VALUES (
-        ${BUCKET}, ${key}, ${original}, ${data.mimetype}, ${buffer.length},
+        ${ctx.projectId}, ${BUCKET}, ${key}, ${original}, ${data.mimetype}, ${buffer.length},
         'ready', ${isPrivate}, ${uploadedBy}::uuid, ${attachedTable}, ${attachedId}::uuid
       )
       RETURNING id, file_name, mime_type, size_bytes, status, is_private,
@@ -843,10 +997,12 @@ app.post('/files', async (request: any, reply) => {
 });
 
 app.get('/files/:id/download', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const [file] = await sql`
     SELECT id, bucket, object_key, file_name, mime_type
     FROM livre_auth.files
-    WHERE id = ${request.params.id}
+    WHERE id = ${request.params.id} AND project_id = ${ctx.projectId}
   `;
   if (!file) return reply.code(404).send({ error: 'Arquivo não encontrado' });
 
@@ -866,6 +1022,8 @@ app.get('/files/:id/download', async (request: any, reply) => {
 });
 
 app.delete('/files', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const ids = request.body?.ids;
   if (!Array.isArray(ids) || !ids.length) {
     return reply.code(400).send({ error: 'Nenhum arquivo selecionado' });
@@ -873,8 +1031,9 @@ app.delete('/files', async (request: any, reply) => {
 
   const idList = ids.map(String);
   const rows = (await sql.unsafe(
-    `SELECT id, bucket, object_key FROM livre_auth.files WHERE id::text = ANY($1::text[])`,
-    [idList]
+    `SELECT id, bucket, object_key FROM livre_auth.files
+     WHERE id::text = ANY($1::text[]) AND project_id = $2`,
+    [idList, ctx.projectId]
   )) as any[];
 
   for (const row of rows) {
@@ -888,8 +1047,9 @@ app.delete('/files', async (request: any, reply) => {
   }
 
   const removed = await sql.unsafe(
-    `DELETE FROM livre_auth.files WHERE id::text = ANY($1::text[]) RETURNING id`,
-    [idList]
+    `DELETE FROM livre_auth.files
+     WHERE id::text = ANY($1::text[]) AND project_id = $2 RETURNING id`,
+    [idList, ctx.projectId]
   );
   return { deleted: removed.length };
 });
@@ -900,16 +1060,22 @@ app.delete('/files', async (request: any, reply) => {
 const hashApiToken = (token: string) =>
   createHash('sha256').update(token).digest('hex');
 
-async function getApiSettings() {
+async function getApiSettings(projectId: string) {
+  await sql`
+    INSERT INTO livre_auth.project_api_settings (project_id)
+    VALUES (${projectId})
+    ON CONFLICT (project_id) DO NOTHING
+  `;
   const [settings] = (await sql`
-    SELECT * FROM livre_auth.api_settings WHERE id = 1
+    SELECT * FROM livre_auth.project_api_settings WHERE project_id = ${projectId}
   `) as any[];
   return settings;
 }
 
-async function isTableExposed(table: string) {
+async function isTableExposed(projectId: string, table: string) {
   const [row] = (await sql`
-    SELECT 1 FROM livre_auth.api_exposed_tables WHERE table_name = ${table}
+    SELECT 1 FROM livre_auth.project_api_exposed_tables
+    WHERE project_id = ${projectId} AND table_name = ${table}
   `) as any[];
   return !!row;
 }
@@ -923,9 +1089,11 @@ async function authenticateApiToken(request: any) {
   if (!token) return null;
 
   const [row] = (await sql`
-    SELECT id, context_user_id, context_tenant_id
-    FROM livre_auth.api_tokens
-    WHERE token_hash = ${hashApiToken(token)} AND revoked = FALSE
+    SELECT t.id, t.project_id, t.context_user_id, t.context_tenant_id, p.schema_name
+    FROM livre_auth.api_tokens t
+    JOIN livre_auth.projects p ON p.id = t.project_id
+    WHERE t.token_hash = ${hashApiToken(token)} AND t.revoked = FALSE
+      AND t.project_id IS NOT NULL AND p.schema_name IS NOT NULL
     LIMIT 1
   `) as any[];
   if (!row) return null;
@@ -981,44 +1149,46 @@ function rlsCondition(rule: { field: string; operator: string; value: string | n
   }
 }
 
-async function grantTableToAuthenticated(table: string) {
+async function grantTableToAuthenticated(schema: string, table: string) {
+  await sql.unsafe(`GRANT USAGE ON SCHEMA ${qident(schema)} TO authenticated`);
   await sql.unsafe(
-    `GRANT SELECT, INSERT, UPDATE, DELETE ON livre_auth.${qident(table)} TO authenticated`
+    `GRANT SELECT, INSERT, UPDATE, DELETE ON ${qident(schema)}.${qident(table)} TO authenticated`
   );
 }
 
 // Aplica as regras de uma tabela como politicas RLS reais.
-async function applyRlsPolicies(table: string) {
+async function applyRlsPolicies(ctx: ProjectContext, table: string) {
   // Remove politicas antigas da tabela
   const policies = (await sql`
     SELECT policyname FROM pg_policies
-    WHERE schemaname = 'livre_auth' AND tablename = ${table}
+    WHERE schemaname = ${ctx.schema} AND tablename = ${table}
   `) as any[];
   for (const p of policies) {
     await sql.unsafe(
-      `DROP POLICY IF EXISTS ${qident(p.policyname)} ON livre_auth.${qident(table)}`
+      `DROP POLICY IF EXISTS ${qident(p.policyname)} ON ${qident(ctx.schema)}.${qident(table)}`
     );
   }
 
   const rules = (await sql`
     SELECT field, operator, value FROM livre_auth.rls_rules
-    WHERE table_name = ${table} ORDER BY created_at
+    WHERE project_id = ${ctx.projectId} AND table_name = ${table}
+    ORDER BY created_at
   `) as any[];
 
   if (!rules.length) {
     // Sem regras = publicamente visivel (RLS desligado)
     await sql.unsafe(
-      `ALTER TABLE livre_auth.${qident(table)} DISABLE ROW LEVEL SECURITY`
+      `ALTER TABLE ${qident(ctx.schema)}.${qident(table)} DISABLE ROW LEVEL SECURITY`
     );
-    await grantTableToAuthenticated(table);
+    await grantTableToAuthenticated(ctx.schema, table);
     return { rls_enabled: false, rules: 0 };
   }
 
   const cond = rules.map(rlsCondition).join(' AND ');
-  await grantTableToAuthenticated(table);
-  await sql.unsafe(`ALTER TABLE livre_auth.${qident(table)} ENABLE ROW LEVEL SECURITY`);
+  await grantTableToAuthenticated(ctx.schema, table);
+  await sql.unsafe(`ALTER TABLE ${qident(ctx.schema)}.${qident(table)} ENABLE ROW LEVEL SECURITY`);
   await sql.unsafe(
-    `CREATE POLICY livre_rls ON livre_auth.${qident(table)}
+    `CREATE POLICY livre_rls ON ${qident(ctx.schema)}.${qident(table)}
        FOR ALL TO authenticated USING (${cond}) WITH CHECK (${cond})`
   );
   return { rls_enabled: true, rules: rules.length };
@@ -1043,17 +1213,21 @@ async function withRlsContext(
   return result;
 }
 
-async function requirePublicTable(table: string, reply: any): Promise<boolean> {
-  const settings = await getApiSettings();
+async function requirePublicTable(
+  tokenRow: { project_id: string; schema_name: string },
+  table: string,
+  reply: any
+): Promise<boolean> {
+  const settings = await getApiSettings(tokenRow.project_id);
   if (!settings?.data_api_enabled) {
     reply.code(403).send({ error: 'Data API desabilitada' });
     return false;
   }
-  if (!(await tableExists(table))) {
+  if (!(await tableExists(tokenRow.schema_name, table))) {
     reply.code(404).send({ error: 'Tabela não encontrada' });
     return false;
   }
-  if (!(await isTableExposed(table))) {
+  if (!(await isTableExposed(tokenRow.project_id, table))) {
     reply.code(403).send({ error: 'Tabela não exposta na API' });
     return false;
   }
@@ -1061,15 +1235,20 @@ async function requirePublicTable(table: string, reply: any): Promise<boolean> {
 }
 
 // ---- Configurações (admin) ----
-app.get('/api-settings', async () => {
-  const settings = await getApiSettings();
+app.get('/api-settings', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+  const settings = await getApiSettings(ctx.projectId);
   const exposed = (await sql`
-    SELECT table_name FROM livre_auth.api_exposed_tables ORDER BY table_name
+    SELECT table_name FROM livre_auth.project_api_exposed_tables
+    WHERE project_id = ${ctx.projectId} ORDER BY table_name
   `) as any[];
   const tokens = (await sql`
     SELECT id, name, token_prefix, created_at, last_used_at, revoked,
            context_user_id, context_tenant_id
-    FROM livre_auth.api_tokens ORDER BY created_at DESC
+    FROM livre_auth.api_tokens
+    WHERE project_id = ${ctx.projectId}
+    ORDER BY created_at DESC
   `) as any[];
   return {
     settings,
@@ -1079,6 +1258,9 @@ app.get('/api-settings', async () => {
 });
 
 app.patch('/api-settings', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+  await getApiSettings(ctx.projectId); // garante a linha do projeto
   const body = request.body || {};
   const allowed = [
     'data_api_enabled',
@@ -1097,44 +1279,53 @@ app.patch('/api-settings', async (request: any, reply) => {
   }
   if (!sets.length) return reply.code(400).send({ error: 'Nada para atualizar' });
 
+  values.push(ctx.projectId);
   const [settings] = (await sql.unsafe(
-    `UPDATE livre_auth.api_settings SET ${sets.join(', ')}, updated_at = NOW()
-     WHERE id = 1 RETURNING *`,
+    `UPDATE livre_auth.project_api_settings
+     SET ${sets.join(', ')}, updated_at = NOW()
+     WHERE project_id = $${values.length} RETURNING *`,
     values
   )) as any[];
   return { settings };
 });
 
 app.put('/api-settings/tables', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const requested = Array.isArray(request.body?.tables) ? request.body.tables : [];
   const valid: string[] = [];
   for (const t of requested) {
-    if (typeof t === 'string' && (await tableExists(t))) valid.push(t);
+    if (typeof t === 'string' && (await tableExists(ctx.schema, t))) valid.push(t);
   }
 
-  await sql`DELETE FROM livre_auth.api_exposed_tables`;
+  await sql`DELETE FROM livre_auth.project_api_exposed_tables
+            WHERE project_id = ${ctx.projectId}`;
   for (const t of valid) {
     await sql`
-      INSERT INTO livre_auth.api_exposed_tables (table_name)
-      VALUES (${t}) ON CONFLICT DO NOTHING
+      INSERT INTO livre_auth.project_api_exposed_tables (project_id, table_name)
+      VALUES (${ctx.projectId}, ${t}) ON CONFLICT DO NOTHING
     `;
     // Garante permissao ao role da API e aplica as regras RLS existentes.
-    await applyRlsPolicies(t);
+    await applyRlsPolicies(ctx, t);
   }
   return { exposedTables: valid };
 });
 
 // ---- RLS (privacidade por linha) ----
-app.get('/rls', async () => {
+app.get('/rls', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const rules = (await sql`
     SELECT id, table_name, field, operator, value, created_at
-    FROM livre_auth.rls_rules ORDER BY table_name, created_at
+    FROM livre_auth.rls_rules
+    WHERE project_id = ${ctx.projectId}
+    ORDER BY table_name, created_at
   `) as any[];
 
   const rlsState = (await sql`
     SELECT c.relname AS table_name, c.relrowsecurity AS enabled
     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = 'livre_auth' AND c.relkind = 'r'
+    WHERE n.nspname = ${ctx.schema} AND c.relkind = 'r'
   `) as any[];
 
   const enabledMap: Record<string, boolean> = {};
@@ -1144,6 +1335,8 @@ app.get('/rls', async () => {
 });
 
 app.post('/rls', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const table = String(request.body?.table_name || '').trim();
   const field = String(request.body?.field || '').trim();
   const operator = String(request.body?.operator || '').trim();
@@ -1151,10 +1344,10 @@ app.post('/rls', async (request: any, reply) => {
     ? null
     : String(request.body.value);
 
-  if (!(await tableExists(table))) {
+  if (!(await tableExists(ctx.schema, table))) {
     return reply.code(404).send({ error: 'Tabela não encontrada' });
   }
-  const cols = await columnNames(table);
+  const cols = await columnNames(ctx.schema, table);
   if (!cols.includes(field)) {
     return reply.code(400).send({ error: 'Campo não encontrado' });
   }
@@ -1163,38 +1356,46 @@ app.post('/rls', async (request: any, reply) => {
   }
 
   const [rule] = (await sql`
-    INSERT INTO livre_auth.rls_rules (table_name, field, operator, value)
-    VALUES (${table}, ${field}, ${operator}, ${value})
+    INSERT INTO livre_auth.rls_rules (project_id, table_name, field, operator, value)
+    VALUES (${ctx.projectId}, ${table}, ${field}, ${operator}, ${value})
     RETURNING id, table_name, field, operator, value, created_at
   `) as any[];
 
-  const applied = await applyRlsPolicies(table);
+  const applied = await applyRlsPolicies(ctx, table);
   return { rule, applied };
 });
 
 app.delete('/rls/:id', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const [rule] = (await sql`
-    DELETE FROM livre_auth.rls_rules WHERE id = ${request.params.id}
+    DELETE FROM livre_auth.rls_rules
+    WHERE id = ${request.params.id} AND project_id = ${ctx.projectId}
     RETURNING table_name
   `) as any[];
   if (!rule) return reply.code(404).send({ error: 'Regra não encontrada' });
-  const applied = await applyRlsPolicies(rule.table_name);
+  const applied = await applyRlsPolicies(ctx, rule.table_name);
   return { ok: true, applied };
 });
 
 // Torna a tabela publicamente visivel (remove regras e desliga RLS)
 app.post('/rls/:table/public', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const { table } = request.params;
-  if (!(await tableExists(table))) {
+  if (!(await tableExists(ctx.schema, table))) {
     return reply.code(404).send({ error: 'Tabela não encontrada' });
   }
-  await sql`DELETE FROM livre_auth.rls_rules WHERE table_name = ${table}`;
-  const applied = await applyRlsPolicies(table);
+  await sql`DELETE FROM livre_auth.rls_rules
+            WHERE project_id = ${ctx.projectId} AND table_name = ${table}`;
+  const applied = await applyRlsPolicies(ctx, table);
   return { ok: true, applied };
 });
 
 // ---- Tokens (admin) ----
-app.post('/api-tokens', async (request: any) => {
+app.post('/api-tokens', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const name = String(request.body?.name || '').trim() || 'API token';
   const token = 'lv_' + randomBytes(24).toString('hex');
   const prefix = token.slice(0, 10) + '…';
@@ -1212,8 +1413,8 @@ app.post('/api-tokens', async (request: any) => {
 
   const [apiToken] = (await sql`
     INSERT INTO livre_auth.api_tokens
-      (name, token_prefix, token_hash, context_user_id, context_tenant_id)
-    VALUES (${name}, ${prefix}, ${hashApiToken(token)}, ${ctxUser}::uuid, ${ctxTenant}::uuid)
+      (project_id, name, token_prefix, token_hash, context_user_id, context_tenant_id)
+    VALUES (${ctx.projectId}, ${name}, ${prefix}, ${hashApiToken(token)}, ${ctxUser}::uuid, ${ctxTenant}::uuid)
     RETURNING id, name, token_prefix, created_at, last_used_at, revoked,
               context_user_id, context_tenant_id
   `) as any[];
@@ -1223,9 +1424,12 @@ app.post('/api-tokens', async (request: any) => {
 });
 
 app.delete('/api-tokens/:id', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
   const [row] = (await sql`
     UPDATE livre_auth.api_tokens SET revoked = TRUE
-    WHERE id = ${request.params.id} RETURNING id
+    WHERE id = ${request.params.id} AND project_id = ${ctx.projectId}
+    RETURNING id
   `) as any[];
   if (!row) return reply.code(404).send({ error: 'Token não encontrado' });
   return { ok: true };
@@ -1235,9 +1439,10 @@ app.delete('/api-tokens/:id', async (request: any, reply) => {
 app.get('/public/_meta', async (request: any, reply) => {
   const tokenRow = await requireApiToken(request, reply);
   if (!tokenRow) return;
-  const settings = await getApiSettings();
+  const settings = await getApiSettings(tokenRow.project_id);
   const tables = (await sql`
-    SELECT table_name FROM livre_auth.api_exposed_tables ORDER BY table_name
+    SELECT table_name FROM livre_auth.project_api_exposed_tables
+    WHERE project_id = ${tokenRow.project_id} ORDER BY table_name
   `) as any[];
   return {
     data_api_enabled: settings?.data_api_enabled ?? false,
@@ -1250,13 +1455,13 @@ app.get('/public/:table', async (request: any, reply) => {
   const tokenRow = await requireApiToken(request, reply);
   if (!tokenRow) return;
   const { table } = request.params;
-  if (!(await requirePublicTable(table, reply))) return;
+  if (!(await requirePublicTable(tokenRow, table, reply))) return;
 
   const limit = Math.min(Math.max(parseInt(request.query.limit || '50', 10) || 50, 1), 200);
   const offset = Math.max(parseInt(request.query.offset || '0', 10) || 0, 0);
   const search = String(request.query.search || '').trim();
 
-  const allCols = await columnNames(table);
+  const allCols = await columnNames(tokenRow.schema_name, table);
   const cols = allCols.filter((n) => !HIDDEN_COLUMNS.has(n));
   if (!cols.length) return { data: [], total: 0, limit, offset };
 
@@ -1269,16 +1474,17 @@ app.get('/public/:table', async (request: any, reply) => {
 
   const select = cols.map(qident).join(', ');
   const orderCol = allCols.includes('id') ? qident('id') : qident(cols[0]);
+  const qualified = `${qident(tokenRow.schema_name)}.${qident(table)}`;
 
   try {
     const result = await withRlsContext(tokenRow, async (tx) => {
       const rows = await tx.unsafe(
-        `SELECT ${select} FROM livre_auth.${qident(table)} ${where}
+        `SELECT ${select} FROM ${qualified} ${where}
          ORDER BY ${orderCol} DESC LIMIT ${limit} OFFSET ${offset}`,
         params
       );
       const [countRow] = (await tx.unsafe(
-        `SELECT count(*)::int AS count FROM livre_auth.${qident(table)} ${where}`,
+        `SELECT count(*)::int AS count FROM ${qualified} ${where}`,
         params
       )) as any[];
       return { rows, total: countRow.count };
@@ -1293,14 +1499,15 @@ app.get('/public/:table/:id', async (request: any, reply) => {
   const tokenRow = await requireApiToken(request, reply);
   if (!tokenRow) return;
   const { table, id } = request.params;
-  if (!(await requirePublicTable(table, reply))) return;
+  if (!(await requirePublicTable(tokenRow, table, reply))) return;
 
-  const allCols = await columnNames(table);
+  const allCols = await columnNames(tokenRow.schema_name, table);
   const cols = allCols.filter((n) => !HIDDEN_COLUMNS.has(n));
+  const qualified = `${qident(tokenRow.schema_name)}.${qident(table)}`;
   try {
     const row = await withRlsContext(tokenRow, async (tx) => {
       const [r] = (await tx.unsafe(
-        `SELECT ${cols.map(qident).join(', ')} FROM livre_auth.${qident(table)}
+        `SELECT ${cols.map(qident).join(', ')} FROM ${qualified}
          WHERE id::text = $1 LIMIT 1`,
         [id]
       )) as any[];
@@ -1317,20 +1524,21 @@ app.post('/public/:table', async (request: any, reply) => {
   const tokenRow = await requireApiToken(request, reply);
   if (!tokenRow) return;
   const { table } = request.params;
-  if (!(await requirePublicTable(table, reply))) return;
+  if (!(await requirePublicTable(tokenRow, table, reply))) return;
 
   const body = request.body || {};
-  const allCols = await columnNames(table);
+  const allCols = await columnNames(tokenRow.schema_name, table);
   const cols = allCols.filter((n) => !HIDDEN_COLUMNS.has(n));
   const keys = Object.keys(body).filter(
     (k) => cols.includes(k) && body[k] !== '' && body[k] !== null && body[k] !== undefined
   );
   if (!keys.length) return reply.code(400).send({ error: 'Nenhum campo válido informado' });
 
+  const qualified = `${qident(tokenRow.schema_name)}.${qident(table)}`;
   try {
     const row = await withRlsContext(tokenRow, async (tx) => {
       const [r] = (await tx.unsafe(
-        `INSERT INTO livre_auth.${qident(table)} (${keys.map(qident).join(', ')})
+        `INSERT INTO ${qualified} (${keys.map(qident).join(', ')})
          VALUES (${keys.map((_, i) => `$${i + 1}`).join(', ')})
          RETURNING ${cols.map(qident).join(', ')}`,
         keys.map((k) => body[k])
@@ -1347,20 +1555,21 @@ app.patch('/public/:table/:id', async (request: any, reply) => {
   const tokenRow = await requireApiToken(request, reply);
   if (!tokenRow) return;
   const { table, id } = request.params;
-  if (!(await requirePublicTable(table, reply))) return;
+  if (!(await requirePublicTable(tokenRow, table, reply))) return;
 
   const body = request.body || {};
-  const allCols = await columnNames(table);
+  const allCols = await columnNames(tokenRow.schema_name, table);
   const cols = allCols.filter((n) => !HIDDEN_COLUMNS.has(n) && n !== 'id');
   const keys = Object.keys(body).filter((k) => cols.includes(k));
   if (!keys.length) return reply.code(400).send({ error: 'Nenhum campo válido informado' });
 
   const values = keys.map((k) => body[k]);
   values.push(id);
+  const qualified = `${qident(tokenRow.schema_name)}.${qident(table)}`;
   try {
     const row = await withRlsContext(tokenRow, async (tx) => {
       const [r] = (await tx.unsafe(
-        `UPDATE livre_auth.${qident(table)}
+        `UPDATE ${qualified}
          SET ${keys.map((k, i) => `${qident(k)} = $${i + 1}`).join(', ')}
          WHERE id::text = $${values.length}
          RETURNING ${cols.map(qident).join(', ')}`,
@@ -1379,12 +1588,13 @@ app.delete('/public/:table/:id', async (request: any, reply) => {
   const tokenRow = await requireApiToken(request, reply);
   if (!tokenRow) return;
   const { table, id } = request.params;
-  if (!(await requirePublicTable(table, reply))) return;
+  if (!(await requirePublicTable(tokenRow, table, reply))) return;
 
+  const qualified = `${qident(tokenRow.schema_name)}.${qident(table)}`;
   try {
     const deleted = await withRlsContext(tokenRow, async (tx) => {
       const rows = (await tx.unsafe(
-        `DELETE FROM livre_auth.${qident(table)} WHERE id::text = $1 RETURNING id`,
+        `DELETE FROM ${qualified} WHERE id::text = $1 RETURNING id`,
         [id]
       )) as any[];
       return rows.length;
@@ -1400,7 +1610,7 @@ app.delete('/public/:table/:id', async (request: any, reply) => {
 app.post('/public/wf/:name', async (request: any, reply) => {
   const tokenRow = await requireApiToken(request, reply);
   if (!tokenRow) return;
-  const settings = await getApiSettings();
+  const settings = await getApiSettings(tokenRow.project_id);
   if (!settings?.workflow_api_enabled) {
     return reply.code(403).send({ error: 'Workflow API desabilitada' });
   }

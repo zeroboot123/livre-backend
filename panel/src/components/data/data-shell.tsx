@@ -24,6 +24,12 @@ import {
   X,
 } from 'lucide-react';
 import { fetchTables, createTable, type DataTable } from '@/lib/data-api';
+import { apiFetch } from '@/lib/api-client';
+import {
+  getActiveProjectId,
+  setActiveProjectId as persistActiveProjectId,
+  type Project,
+} from '@/lib/projects';
 import { Modal } from '@/components/ui/Modal';
 
 export interface DataView {
@@ -90,6 +96,18 @@ export function DataShell({
   const [newTypeError, setNewTypeError] = useState('');
   const [savingType, setSavingType] = useState(false);
 
+  // Projeto ativo (cada projeto tem seu próprio schema/database)
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [activeProjectId, setActiveId] = useState<string | null>(null);
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const [projectModalOpen, setProjectModalOpen] = useState(false);
+  const [projectName, setProjectName] = useState('');
+  const [projectError, setProjectError] = useState('');
+  const [creatingProject, setCreatingProject] = useState(false);
+
+  const activeProject = projects.find((p) => p.id === activeProjectId) || null;
+
   const reloadTables = useCallback(async () => {
     setLoadingTables(true);
     try {
@@ -105,7 +123,25 @@ export function DataShell({
   }, []);
 
   useEffect(() => {
-    reloadTables();
+    (async () => {
+      let list: Project[] = [];
+      try {
+        const data = await apiFetch('/projects');
+        list = data.projects || [];
+      } catch {
+        list = [];
+      }
+      setProjects(list);
+
+      const stored = getActiveProjectId();
+      const active = list.find((p) => p.id === stored) || list[0] || null;
+      persistActiveProjectId(active?.id ?? null);
+      setActiveId(active?.id ?? null);
+      setProjectsLoaded(true);
+
+      await reloadTables();
+    })();
+
     try {
       const stored = localStorage.getItem('livre_data_views');
       if (stored) setViews(JSON.parse(stored));
@@ -113,6 +149,44 @@ export function DataShell({
       /* ignore */
     }
   }, [reloadTables]);
+
+  const applyProject = async (id: string) => {
+    persistActiveProjectId(id);
+    setActiveId(id);
+    setProjectMenuOpen(false);
+    setSelectedState('');
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('table');
+      window.history.replaceState(null, '', url.toString());
+    }
+    await reloadTables();
+  };
+
+  const handleCreateProject = async () => {
+    const name = projectName.trim();
+    if (!name) {
+      setProjectError('Informe o nome da aplicação');
+      return;
+    }
+    setCreatingProject(true);
+    setProjectError('');
+    try {
+      const data = await apiFetch('/projects', {
+        method: 'POST',
+        body: JSON.stringify({ name }),
+      });
+      const project: Project = data.project;
+      setProjects((prev) => [project, ...prev]);
+      setProjectModalOpen(false);
+      setProjectName('');
+      await applyProject(project.id);
+    } catch (err: any) {
+      setProjectError(err?.message || 'Erro ao criar projeto');
+    } finally {
+      setCreatingProject(false);
+    }
+  };
 
   const setSelected = (table: string) => {
     setSelectedState(table);
@@ -191,6 +265,67 @@ export function DataShell({
           </nav>
 
           <div className="relative ml-auto flex shrink-0 items-center gap-2">
+            <div className="relative">
+              <button
+                onClick={() => setProjectMenuOpen((v) => !v)}
+                className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                title="Projeto ativo"
+              >
+                <FolderOpen className="h-3.5 w-3.5 text-blue-500" />
+                <span className="max-w-[150px] truncate">
+                  {activeProject?.name || 'Selecionar projeto'}
+                </span>
+                <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
+              </button>
+
+              {projectMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-30" onClick={() => setProjectMenuOpen(false)} />
+                  <div className="absolute right-0 top-full z-40 mt-2 w-64 rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg">
+                    <p className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                      Projetos
+                    </p>
+                    <div className="max-h-64 overflow-y-auto">
+                      {projects.map((p) => (
+                        <button
+                          key={p.id}
+                          onClick={() => applyProject(p.id)}
+                          className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13px] ${
+                            p.id === activeProjectId
+                              ? 'bg-blue-50 text-blue-700'
+                              : 'text-slate-700 hover:bg-slate-50'
+                          }`}
+                        >
+                          <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+                          <span className="truncate">{p.name}</span>
+                          {p.id === activeProjectId && (
+                            <span className="ml-auto text-[10px] font-semibold uppercase">ativo</span>
+                          )}
+                        </button>
+                      ))}
+                      {!projects.length && (
+                        <p className="px-2.5 py-2 text-xs text-slate-400">
+                          Nenhum projeto criado ainda.
+                        </p>
+                      )}
+                    </div>
+                    <div className="my-1 border-t border-slate-100" />
+                    <button
+                      onClick={() => {
+                        setProjectMenuOpen(false);
+                        setProjectError('');
+                        setProjectModalOpen(true);
+                      }}
+                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13px] font-medium text-blue-600 hover:bg-blue-50"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      Novo projeto
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+
             <span className="hidden items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-700 sm:flex">
               <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
               Development version
@@ -349,7 +484,42 @@ export function DataShell({
           )}
 
           {/* Área de trabalho */}
-          <main className="min-w-0 flex-1 overflow-hidden">{children}</main>
+          <main className="min-w-0 flex-1 overflow-hidden">
+            {!projectsLoaded ? (
+              <div className="flex h-full items-center justify-center text-sm text-slate-400">
+                Carregando projeto...
+              </div>
+            ) : !activeProjectId ? (
+              <div className="flex h-full flex-col items-center justify-center gap-4 p-8 text-center">
+                <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-blue-50">
+                  <FolderOpen className="h-7 w-7 text-blue-600" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-800">
+                    Nenhum projeto selecionado
+                  </h2>
+                  <p className="mt-1 max-w-sm text-sm text-slate-500">
+                    Crie um projeto para ter um banco de dados dedicado para a sua aplicação. Cada
+                    projeto possui suas próprias tabelas, dados e regras.
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    setProjectError('');
+                    setProjectModalOpen(true);
+                  }}
+                  className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                >
+                  <Plus className="h-4 w-4" />
+                  Criar projeto
+                </button>
+              </div>
+            ) : (
+              <div key={activeProjectId} className="h-full">
+                {children}
+              </div>
+            )}
+          </main>
         </div>
 
         <Modal open={newTypeOpen} onClose={() => setNewTypeOpen(false)} title="New data type" size="sm">
@@ -386,6 +556,56 @@ export function DataShell({
                 className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
               >
                 {savingType ? 'Criando...' : 'Criar data type'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+
+        <Modal
+          open={projectModalOpen}
+          onClose={() => setProjectModalOpen(false)}
+          title="Novo projeto"
+          size="sm"
+        >
+          <div className="space-y-4">
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-800">
+                Nome da aplicação
+              </label>
+              <input
+                value={projectName}
+                onChange={(e) => setProjectName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleCreateProject();
+                }}
+                placeholder="ex: Minha Loja"
+                autoFocus
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/15"
+              />
+              <p className="mt-1 text-[11px] text-slate-400">
+                Será criado um banco de dados dedicado (schema) só para este projeto.
+              </p>
+            </div>
+
+            {projectError && (
+              <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                {projectError}
+              </p>
+            )}
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                onClick={() => setProjectModalOpen(false)}
+                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleCreateProject}
+                disabled={creatingProject || !projectName.trim()}
+                className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                {creatingProject ? 'Criando...' : 'Criar projeto'}
               </button>
             </div>
           </div>
