@@ -1,0 +1,165 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    networks:
+      - easypanel
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    environment:
+      POSTGRES_USER: livre_admin
+      POSTGRES_PASSWORD: ${DB_SUPERPASS}
+      POSTGRES_DB: livre_backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U livre_admin"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  minio:
+    image: bitnamilegacy/minio:latest
+    restart: unless-stopped
+    networks:
+      - easypanel
+    volumes:
+      - minio_data:/bitnami/minio/data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_DEFAULT_BUCKETS: ${MINIO_BUCKET:-livre-files}
+      MINIO_BROWSER: "off"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  postgrest:
+    image: postgrest/postgrest:latest
+    restart: unless-stopped
+    networks:
+      - easypanel
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: postgres://livre_admin:${DB_SUPERPASS}@postgres:5432/livre_backend
+      PGRST_DB_SCHEMA: public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_OPENAPI_SERVER_PROXY_URI: ${PUBLIC_URL}/api/rest
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  auth-service:
+    build:
+      context: ./services/auth
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    networks:
+      - easypanel
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: 3001
+      NODE_ENV: production
+      DATABASE_URL: postgres://livre_admin:${DB_SUPERPASS}@postgres:5432/livre_backend
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRATION: 15m
+      JWT_REFRESH_EXPIRATION: 7d
+      ARGON2_TIME_COST: 2
+      ARGON2_MEMORY_COST: 19456
+      CORS_ORIGINS: "*"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  admin-api:
+    build:
+      context: ./services/admin-api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    networks:
+      - easypanel
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    environment:
+      PORT: 3002
+      NODE_ENV: production
+      DATABASE_URL: postgres://livre_admin:${DB_SUPERPASS}@postgres:5432/livre_backend
+      JWT_SECRET: ${JWT_SECRET}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_REGION: us-east-1
+      MINIO_BUCKET: ${MINIO_BUCKET:-livre-files}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MAX_UPLOAD_MB: 25
+      API_BASE_PATH: /admin/api
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  visual-db:
+    build:
+      context: ./services/visual-db
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    networks:
+      - easypanel
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: 3004
+      NODE_ENV: production
+      DATABASE_URL: postgres://livre_admin:${DB_SUPERPASS}@postgres:5432/livre_backend
+      JWT_SECRET: ${JWT_SECRET}
+      POSTGREST_URL: http://postgrest:3000
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  admin-panel:
+    build:
+      context: ./panel
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    networks:
+      - easypanel
+    depends_on:
+      - auth-service
+      - admin-api
+      - visual-db
+    environment:
+      NEXT_PUBLIC_API_URL: ${PUBLIC_URL}/admin/api
+      NEXT_PUBLIC_AUTH_URL: ${PUBLIC_URL}/auth
+      NEXT_PUBLIC_VISUAL_DB_URL: ${PUBLIC_URL}/admin/visual-db
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+networks:
+  easypanel:
+    external: true
+    name: easypanel
+
+volumes:
+  postgres_data:
+    driver: local
+  minio_data:
+    driver: local

@@ -1,0 +1,123 @@
+{
+  "http": {
+    "routers": {
+      "http-livre-auth": {
+        "middlewares": ["redirect-to-https"],
+        "priority": 2,
+        "rule": "Host(`livrebackend.gerbox.com.br`) && PathPrefix(`/auth`)",
+        "service": "livre-auth",
+        "entryPoints": ["http"]
+      },
+      "https-livre-auth": {
+        "priority": 2,
+        "rule": "Host(`livrebackend.gerbox.com.br`) && PathPrefix(`/auth`)",
+        "service": "livre-auth",
+        "tls": {
+          "certResolver": "letsencrypt",
+          "domains": [{"main": "livrebackend.gerbox.com.br"}]
+        },
+        "entryPoints": ["https"]
+      },
+      "http-livre-postgrest": {
+        "middlewares": ["redirect-to-https"],
+        "priority": 2,
+        "rule": "Host(`livrebackend.gerbox.com.br`) && PathPrefix(`/api/rest`)",
+        "service": "livre-postgrest",
+        "entryPoints": ["http"]
+      },
+      "https-livre-postgrest": {
+        "priority": 2,
+        "rule": "Host(`livrebackend.gerbox.com.br`) && PathPrefix(`/api/rest`)",
+        "service": "livre-postgrest",
+        "tls": {
+          "certResolver": "letsencrypt",
+          "domains": [{"main": "livrebackend.gerbox.com.br"}]
+        },
+        "entryPoints": ["https"]
+      },
+      "http-livre-admin-panel": {
+        "middlewares": ["redirect-to-https"],
+        "priority": 2,
+        "rule": "Host(`livrebackend.gerbox.com.br`) && PathPrefix(`/admin`)",
+        "service": "livre-admin-panel",
+        "entryPoints": ["http"]
+      },
+      "https-livre-admin-panel": {
+        "priority": 2,
+        "rule": "Host(`livrebackend.gerbox.com.br`) && PathPrefix(`/admin`)",
+        "service": "livre-admin-panel",
+        "tls": {
+          "certResolver": "letsencrypt",
+          "domains": [{"main": "livrebackend.gerbox.com.br"}]
+        },
+        "entryPoints": ["https"]
+      },
+      "http-livre-admin-api": {
+        "middlewares": ["redirect-to-https"],
+        "priority": 2,
+        "rule": "Host(`livrebackend.gerbox.com.br`) && PathPrefix(`/admin/api`)",
+        "service": "livre-admin-api",
+        "entryPoints": ["http"]
+      },
+      "https-livre-admin-api": {
+        "priority": 2,
+        "rule": "Host(`livrebackend.gerbox.com.br`) && PathPrefix(`/admin/api`)",
+        "service": "livre-admin-api",
+        "tls": {
+          "certResolver": "letsencrypt",
+          "domains": [{"main": "livrebackend.gerbox.com.br"}]
+        },
+        "entryPoints": ["https"]
+      },
+      "http-livre-visual-db": {
+        "middlewares": ["redirect-to-https"],
+        "priority": 2,
+        "rule": "Host(`livrebackend.gerbox.com.br`) && PathPrefix(`/admin/visual-db`)",
+        "service": "livre-visual-db",
+        "entryPoints": ["http"]
+      },
+      "https-livre-visual-db": {
+        "priority": 2,
+        "rule": "Host(`livrebackend.gerbox.com.br`) && PathPrefix(`/admin/visual-db`)",
+        "service": "livre-visual-db",
+        "tls": {
+          "certResolver": "letsencrypt",
+          "domains": [{"main": "livrebackend.gerbox.com.br"}]
+        },
+        "entryPoints": ["https"]
+      }
+    },
+    "services": {
+      "livre-auth": {
+        "loadBalancer": {
+          "passHostHeader": true,
+          "servers": [{"url": "http://livre-auth:3001"}]
+        }
+      },
+      "livre-postgrest": {
+        "loadBalancer": {
+          "passHostHeader": true,
+          "servers": [{"url": "http://livre-postgrest:3000"}]
+        }
+      },
+      "livre-admin-panel": {
+        "loadBalancer": {
+          "passHostHeader": true,
+          "servers": [{"url": "http://livre-admin-panel:3003"}]
+        }
+      },
+      "livre-admin-api": {
+        "loadBalancer": {
+          "passHostHeader": true,
+          "servers": [{"url": "http://livre-admin-api:3002"}]
+        }
+      },
+      "livre-visual-db": {
+        "loadBalancer": {
+          "passHostHeader": true,
+          "servers": [{"url": "http://livre-visual-db:3004"}]
+        }
+      }
+    }
+  }
+}

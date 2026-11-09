@@ -1,0 +1,28 @@
+# === Node / JS ===
+node_modules/
+dist/
+.next/
+*.tsbuildinfo
+
+# === Ambiente ===
+.env
+.env.local
+.env.production
+
+# === Sistema ===
+.DS_Store
+Thumbs.db
+*.log
+npm-debug.log*
+
+# === Docker ===
+*.override.yml
+
+# === IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# === Backups locais ===
+backups/

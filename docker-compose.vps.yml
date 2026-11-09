@@ -1,0 +1,276 @@
+services:
+  # ==============================================================
+  # PostgreSQL - Banco de Dados Principal
+  # ==============================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: livre-postgres
+    restart: unless-stopped
+    networks:
+      - livre_backend_net
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./docker/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./backups:/backups:rw
+    environment:
+      POSTGRES_USER: ${DB_SUPERUSER:-livre_admin}
+      POSTGRES_PASSWORD: ${DB_SUPERPASS:?DB_SUPERPASS is required}
+      POSTGRES_DB: livre_backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_SUPERUSER:-livre_admin}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: ${PG_MEMORY_LIMIT:-512M}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ==============================================================
+  # PostgREST - API REST Automática
+  # ==============================================================
+  postgrest:
+    image: postgrest/postgrest:latest
+    container_name: livre-postgrest
+    restart: unless-stopped
+    networks:
+      - livre_backend_net
+      - easypanel
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: postgres://${DB_SUPERUSER}:${DB_SUPERPASS}@postgres:5432/livre_backend
+      PGRST_DB_SCHEMA: public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_OPENAPI_SERVER_PROXY_URI: ${PUBLIC_URL:-http://localhost}/api/rest
+      PGRST_JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.livre-postgrest.rule=Host(`${DOMAIN:-api.livrebackend.com.br}`) && PathPrefix(`/api/rest`)"
+      - "traefik.http.routers.livre-postgrest.entrypoints=https"
+      - "traefik.http.routers.livre-postgrest.tls.certresolver=letsencrypt"
+      - "traefik.http.services.livre-postgrest.loadbalancer.server.port=3000"
+      - "traefik.http.middlewares.livre-postgrest-strip.stripprefix.prefixes=/api/rest"
+      - "traefik.http.routers.livre-postgrest.middlewares=livre-postgrest-strip"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ==============================================================
+  # Auth Service - Autenticação (Node.js + TypeScript)
+  # ==============================================================
+  auth-service:
+    build:
+      context: ./services/auth
+      dockerfile: Dockerfile
+    container_name: livre-auth
+    restart: unless-stopped
+    networks:
+      - livre_backend_net
+      - easypanel
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: 3001
+      NODE_ENV: production
+      DATABASE_URL: postgres://${DB_SUPERUSER}:${DB_SUPERPASS}@postgres:5432/livre_backend
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      JWT_EXPIRATION: ${JWT_EXPIRATION:-15m}
+      JWT_REFRESH_EXPIRATION: ${JWT_REFRESH_EXPIRATION:-7d}
+      ARGON2_TIME_COST: ${ARGON2_TIME_COST:-2}
+      ARGON2_MEMORY_COST: ${ARGON2_MEMORY_COST:-19456}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.livre-auth.rule=Host(`${DOMAIN:-api.livrebackend.com.br}`) && PathPrefix(`/auth`)"
+      - "traefik.http.routers.livre-auth.entrypoints=https"
+      - "traefik.http.routers.livre-auth.tls.certresolver=letsencrypt"
+      - "traefik.http.services.livre-auth.loadbalancer.server.port=3001"
+      - "traefik.http.middlewares.livre-auth-strip.stripprefix.prefixes=/auth"
+      - "traefik.http.routers.livre-auth.middlewares=livre-auth-strip"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ==============================================================
+  # Admin API - API Administrativa (Node.js + TypeScript)
+  # ==============================================================
+  admin-api:
+    build:
+      context: ./services/admin-api
+      dockerfile: Dockerfile
+    container_name: livre-admin-api
+    restart: unless-stopped
+    networks:
+      - livre_backend_net
+      - easypanel
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: 3002
+      NODE_ENV: production
+      DATABASE_URL: postgres://${DB_SUPERUSER}:${DB_SUPERPASS}@postgres:5432/livre_backend
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      BACKUP_DIR: /backups
+    volumes:
+      - ./backups:/backups:rw
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.livre-admin-api.rule=Host(`${DOMAIN:-api.livrebackend.com.br}`) && PathPrefix(`/admin/api`)"
+      - "traefik.http.routers.livre-admin-api.entrypoints=https"
+      - "traefik.http.routers.livre-admin-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.livre-admin-api.loadbalancer.server.port=3002"
+      - "traefik.http.middlewares.livre-admin-api-strip.stripprefix.prefixes=/admin/api"
+      - "traefik.http.routers.livre-admin-api.middlewares=livre-admin-api-strip"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3002/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ==============================================================
+  # Visual DB - Editor Visual de Banco de Dados (Node.js + TypeScript)
+  # ==============================================================
+  visual-db:
+    build:
+      context: ./services/visual-db
+      dockerfile: Dockerfile
+    container_name: livre-visual-db
+    restart: unless-stopped
+    networks:
+      - livre_backend_net
+      - easypanel
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: 3004
+      NODE_ENV: production
+      DATABASE_URL: postgres://${DB_SUPERUSER}:${DB_SUPERPASS}@postgres:5432/livre_backend
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      POSTGREST_URL: http://postgrest:3000
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.livre-visual-db.rule=Host(`${DOMAIN:-api.livrebackend.com.br}`) && PathPrefix(`/admin/visual-db`)"
+      - "traefik.http.routers.livre-visual-db.entrypoints=https"
+      - "traefik.http.routers.livre-visual-db.tls.certresolver=letsencrypt"
+      - "traefik.http.services.livre-visual-db.loadbalancer.server.port=3004"
+      - "traefik.http.middlewares.livre-visual-db-strip.stripprefix.prefixes=/admin/visual-db"
+      - "traefik.http.routers.livre-visual-db.middlewares=livre-visual-db-strip"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3004/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ==============================================================
+  # Admin Panel - Painel Administrativo (Next.js)
+  # ==============================================================
+  admin-panel:
+    build:
+      context: ./panel
+      dockerfile: Dockerfile
+    container_name: livre-admin-panel
+    restart: unless-stopped
+    networks:
+      - livre_backend_net
+      - easypanel
+    depends_on:
+      - auth-service
+      - admin-api
+      - visual-db
+    environment:
+      NEXT_PUBLIC_API_URL: ${PUBLIC_URL:-http://localhost}/admin/api
+      NEXT_PUBLIC_AUTH_URL: ${PUBLIC_URL:-http://localhost}/auth
+      NEXT_PUBLIC_VISUAL_DB_URL: ${PUBLIC_URL:-http://localhost}/admin/visual-db
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.livre-admin.rule=Host(`${DOMAIN:-api.livrebackend.com.br}`) && PathPrefix(`/admin`)"
+      - "traefik.http.routers.livre-admin.entrypoints=https"
+      - "traefik.http.routers.livre-admin.tls.certresolver=letsencrypt"
+      - "traefik.http.services.livre-admin.loadbalancer.server.port=3003"
+      - "traefik.http.middlewares.livre-admin-strip.stripprefix.prefixes=/admin"
+      - "traefik.http.routers.livre-admin.middlewares=livre-admin-strip"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# ==============================================================
+# Volumes
+# ==============================================================
+volumes:
+  postgres_data:
+    driver: local
+  backups:
+    driver: local
+
+# ==============================================================
+# Redes
+# ==============================================================
+networks:
+  livre_backend_net:
+    driver: bridge
+    internal: true
+  easypanel:
+    external: true
+    name: easypanel
