@@ -201,7 +201,7 @@ export function Header({ collapsed }: { collapsed: boolean }) {
       {/* Breadcrumbs */}
       <div className="flex items-center gap-2 text-sm">
         {breadcrumbs.map((crumb) => (
-          <span key={crumb.href} className="flex items-center gap-2">
+          <span key={crumb.highlight ? `project-${crumb.label}` : crumb.href} className="flex items-center gap-2">
             {!crumb.isLast ? (
               <Link href={crumb.href} className="text-[#64748B] hover:text-[#0F172A] capitalize">
                 {crumb.label}
