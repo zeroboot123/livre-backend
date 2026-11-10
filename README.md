@@ -1,6 +1,10 @@
 # 🚀 Livre Backend
-
 Plataforma **Backend as a Service (BaaS)** — própria, modular, leve e segura.
+
+<img width="1323" height="605" alt="image" src="https://github.com/user-attachments/assets/3bc72b5c-9039-4e44-94ed-a24c7e2f441f" />
+
+
+
 
 ## 📋 Visão Geral
 
