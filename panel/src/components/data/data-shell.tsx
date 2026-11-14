@@ -458,7 +458,7 @@ export function DataShell({
           )}
 
           {/* Área de trabalho */}
-          <main className="min-w-0 flex-1 overflow-hidden">
+          <main className="min-w-0 flex-1 overflow-y-auto">
             {!projectsLoaded ? (
               <div className="flex h-full items-center justify-center text-sm text-slate-400">
                 Carregando projeto...
