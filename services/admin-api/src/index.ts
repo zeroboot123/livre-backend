@@ -95,6 +95,106 @@ app.get('/stats', async (request) => {
   return { projects: projects.count, users: users.count, sessions: sessions.count };
 });
 
+// ============================================================
+// EMAIL SETTINGS
+// ============================================================
+
+// GET panel-level email settings
+app.get('/email-settings', async (request: any, reply) => {
+  const [settings] = await sql`SELECT * FROM livre_auth.email_settings WHERE id = 1`;
+  return { settings: settings || null };
+});
+
+// PUT panel-level email settings
+app.put('/email-settings', async (request: any, reply) => {
+  const { smtp_host, smtp_port, smtp_username, smtp_password, from_name, from_email, encryption } = request.body || {};
+  await sql`
+    UPDATE livre_auth.email_settings SET
+      smtp_host = COALESCE(${smtp_host}, smtp_host),
+      smtp_port = COALESCE(${smtp_port}, smtp_port),
+      smtp_username = COALESCE(${smtp_username}, smtp_username),
+      smtp_password = COALESCE(${smtp_password}, smtp_password),
+      from_name = COALESCE(${from_name}, from_name),
+      from_email = COALESCE(${from_email}, from_email),
+      encryption = COALESCE(${encryption}, encryption),
+      updated_at = NOW()
+    WHERE id = 1
+  `;
+  const [settings] = await sql`SELECT * FROM livre_auth.email_settings WHERE id = 1`;
+  return { settings };
+});
+
+// POST test email (panel-level)
+app.post('/email-settings/test', async (request: any, reply) => {
+  const { to, smtp_host, smtp_port, smtp_username, smtp_password, from_name, from_email, encryption } = request.body || {};
+  if (!to || !smtp_host) {
+    return reply.code(400).send({ error: 'Destinatário e servidor SMTP são obrigatórios' });
+  }
+  try {
+    const { testEmailSettings } = await import('./services/email.js');
+    await testEmailSettings({
+      smtp_host, smtp_port: smtp_port || 587, smtp_username: smtp_username || '',
+      smtp_password: smtp_password || '', from_name: from_name || '', from_email: from_email || '',
+      encryption: encryption || 'tls',
+    }, to);
+    return { ok: true, message: 'Email de teste enviado com sucesso' };
+  } catch (err: any) {
+    return reply.code(400).send({ error: err.message || 'Falha ao enviar email de teste' });
+  }
+});
+
+// GET per-project email settings
+app.get('/email-settings/project', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+  const [settings] = await sql`
+    SELECT * FROM livre_auth.project_email_settings WHERE project_id = ${ctx.projectId}
+  `;
+  return { settings: settings || null };
+});
+
+// PUT per-project email settings
+app.put('/email-settings/project', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+  const { smtp_host, smtp_port, smtp_username, smtp_password, from_name, from_email, encryption } = request.body || {};
+
+  await sql`
+    INSERT INTO livre_auth.project_email_settings (project_id, smtp_host, smtp_port, smtp_username, smtp_password, from_name, from_email, encryption)
+    VALUES (${ctx.projectId}, ${smtp_host || ''}, ${smtp_port || 587}, ${smtp_username || ''}, ${smtp_password || ''}, ${from_name || ''}, ${from_email || ''}, ${encryption || 'tls'})
+    ON CONFLICT (project_id) DO UPDATE SET
+      smtp_host = COALESCE(${smtp_host}, project_email_settings.smtp_host),
+      smtp_port = COALESCE(${smtp_port}, project_email_settings.smtp_port),
+      smtp_username = COALESCE(${smtp_username}, project_email_settings.smtp_username),
+      smtp_password = COALESCE(${smtp_password}, project_email_settings.smtp_password),
+      from_name = COALESCE(${from_name}, project_email_settings.from_name),
+      from_email = COALESCE(${from_email}, project_email_settings.from_email),
+      encryption = COALESCE(${encryption}, project_email_settings.encryption),
+      updated_at = NOW()
+  `;
+  const [settings] = await sql`
+    SELECT * FROM livre_auth.project_email_settings WHERE project_id = ${ctx.projectId}
+  `;
+  return { settings };
+});
+
+// POST test email (per-project)
+app.post('/email-settings/project/test', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+  const { to } = request.body || {};
+  if (!to) return reply.code(400).send({ error: 'Destinatário é obrigatório' });
+
+  try {
+    const { sendProjectEmail } = await import('./services/email.js');
+    await sendProjectEmail(ctx.projectId, to, 'Teste de email do projeto',
+      '<h2>Configuração de email OK!</h2><p>Seu servidor SMTP está configurado corretamente para este projeto.</p>');
+    return { ok: true, message: 'Email de teste enviado com sucesso' };
+  } catch (err: any) {
+    return reply.code(400).send({ error: err.message || 'Falha ao enviar email de teste' });
+  }
+});
+
 // Listar projetos
 app.get('/projects', async () => {
   const projects = (await sql`

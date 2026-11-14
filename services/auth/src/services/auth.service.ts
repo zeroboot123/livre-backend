@@ -3,6 +3,7 @@ import { hashPassword, verifyPassword } from '../utils/password.js';
 import { generateAccessToken, generateRefreshToken, hashToken } from '../utils/crypto.js';
 import { parseDuration } from '../utils/helpers.js';
 import { config } from '../config/index.js';
+import nodemailer from 'nodemailer';
 
 interface RegisterInput {
   email: string;
@@ -259,7 +260,35 @@ export async function forgotPassword(email: string) {
     VALUES (${user.id}, ${resetToken}, ${expiresAt})
   `;
 
-  // TODO: Enviar email com link de recuperação
+  try {
+    const [settings] = await sql`
+      SELECT * FROM livre_auth.email_settings WHERE id = 1
+    `;
+    if (settings && settings.smtp_host) {
+      const transporter = nodemailer.createTransport({
+        host: settings.smtp_host,
+        port: settings.smtp_port,
+        secure: settings.encryption === 'ssl',
+        auth: settings.smtp_username ? {
+          user: settings.smtp_username,
+          pass: settings.smtp_password,
+        } : undefined,
+      });
+
+      const resetUrl = `${config.publicUrl}/reset-password?token=${resetToken}`;
+      await transporter.sendMail({
+        from: `"${settings.from_name}" <${settings.from_email}>`,
+        to: email,
+        subject: 'Recuperação de senha - Livre Backend',
+        html: `<p>Clique no link abaixo para redefinir sua senha:</p><p><a href="${resetUrl}">${resetUrl}</a></p><p>Este link expira em 1 hora.</p>`,
+      });
+      return;
+    }
+  } catch (err) {
+    console.error('Erro ao enviar email de recuperação:', err);
+  }
+
+  // Fallback: log do link mesmo se email não estiver configurado
   console.log(`🔗 Link de recuperação para ${email}: /reset-password?token=${resetToken}`);
 }
 

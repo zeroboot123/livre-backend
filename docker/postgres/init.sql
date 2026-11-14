@@ -180,3 +180,38 @@ GRANT SELECT ON livre_auth.users TO anon, authenticated;
 GRANT SELECT, INSERT, UPDATE ON livre_auth.sessions TO authenticated;
 GRANT SELECT ON livre_auth.projects TO anon, authenticated;
 GRANT SELECT ON livre_auth.tenants TO authenticated;
+
+-- ==============================================================
+-- EMAIL SETTINGS (para migrações de banco novo)
+-- ==============================================================
+
+-- Panel-level email settings (singleton)
+CREATE TABLE IF NOT EXISTS livre_auth.email_settings (
+    id              int PRIMARY KEY DEFAULT 1,
+    smtp_host       text NOT NULL DEFAULT '',
+    smtp_port       integer NOT NULL DEFAULT 587,
+    smtp_username   text NOT NULL DEFAULT '',
+    smtp_password   text NOT NULL DEFAULT '',
+    from_name       text NOT NULL DEFAULT '',
+    from_email      text NOT NULL DEFAULT '',
+    encryption      text NOT NULL DEFAULT 'tls',
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT email_settings_singleton CHECK (id = 1)
+);
+
+INSERT INTO livre_auth.email_settings (id) VALUES (1)
+ON CONFLICT (id) DO NOTHING;
+
+-- Per-project email settings
+CREATE TABLE IF NOT EXISTS livre_auth.project_email_settings (
+    id              uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+    project_id      uuid UNIQUE NOT NULL REFERENCES livre_auth.projects(id) ON DELETE CASCADE,
+    smtp_host       text NOT NULL DEFAULT '',
+    smtp_port       integer NOT NULL DEFAULT 587,
+    smtp_username   text NOT NULL DEFAULT '',
+    smtp_password   text NOT NULL DEFAULT '',
+    from_name       text NOT NULL DEFAULT '',
+    from_email      text NOT NULL DEFAULT '',
+    encryption      text NOT NULL DEFAULT 'tls',
+    updated_at      timestamptz NOT NULL DEFAULT now()
+);

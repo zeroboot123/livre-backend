@@ -212,6 +212,43 @@ export async function runMigrations() {
       WHERE status = 'success'
   `;
 
+  // ── Email settings (panel-level, singleton) ──────────────────
+  await sql`
+    CREATE TABLE IF NOT EXISTS livre_auth.email_settings (
+      id int PRIMARY KEY DEFAULT 1,
+      smtp_host text NOT NULL DEFAULT '',
+      smtp_port integer NOT NULL DEFAULT 587,
+      smtp_username text NOT NULL DEFAULT '',
+      smtp_password text NOT NULL DEFAULT '',
+      from_name text NOT NULL DEFAULT '',
+      from_email text NOT NULL DEFAULT '',
+      encryption text NOT NULL DEFAULT 'tls',
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT email_settings_singleton CHECK (id = 1)
+    )
+  `;
+
+  await sql`
+    INSERT INTO livre_auth.email_settings (id) VALUES (1)
+    ON CONFLICT (id) DO NOTHING
+  `;
+
+  // Per-project email settings
+  await sql`
+    CREATE TABLE IF NOT EXISTS livre_auth.project_email_settings (
+      id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+      project_id uuid UNIQUE NOT NULL REFERENCES livre_auth.projects(id) ON DELETE CASCADE,
+      smtp_host text NOT NULL DEFAULT '',
+      smtp_port integer NOT NULL DEFAULT 587,
+      smtp_username text NOT NULL DEFAULT '',
+      smtp_password text NOT NULL DEFAULT '',
+      from_name text NOT NULL DEFAULT '',
+      from_email text NOT NULL DEFAULT '',
+      encryption text NOT NULL DEFAULT 'tls',
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+
   // ── Backfill: garante um schema para projetos antigos ───────
   const sanitize = (value: string) => {
     const base = String(value || '')

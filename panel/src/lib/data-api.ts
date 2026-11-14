@@ -527,3 +527,60 @@ export async function deleteRlsRule(id: string) {
 export async function makeTablePublic(table: string) {
   return apiFetch(`/rls/${encodeURIComponent(table)}/public`, { method: 'POST' });
 }
+
+// ============================================================
+// Email settings
+// ============================================================
+export interface EmailSettingsData {
+  smtp_host: string;
+  smtp_port: number;
+  smtp_username: string;
+  smtp_password: string;
+  from_name: string;
+  from_email: string;
+  encryption: string;
+}
+
+export async function fetchEmailSettings(): Promise<{ settings: EmailSettingsData | null }> {
+  return apiFetch('/email-settings');
+}
+
+export async function updateEmailSettings(
+  data: Partial<EmailSettingsData>
+): Promise<{ settings: EmailSettingsData }> {
+  return apiFetch('/email-settings', {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function testEmailSettings(
+  data: EmailSettingsData & { to: string }
+): Promise<{ ok: boolean; message: string }> {
+  return apiFetch('/email-settings/test', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function fetchProjectEmailSettings(): Promise<{ settings: EmailSettingsData | null }> {
+  return apiFetch('/email-settings/project');
+}
+
+export async function updateProjectEmailSettings(
+  data: Partial<EmailSettingsData>
+): Promise<{ settings: EmailSettingsData }> {
+  return apiFetch('/email-settings/project', {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function testProjectEmailSettings(
+  to: string
+): Promise<{ ok: boolean; message: string }> {
+  return apiFetch('/email-settings/project/test', {
+    method: 'POST',
+    body: JSON.stringify({ to }),
+  });
+}

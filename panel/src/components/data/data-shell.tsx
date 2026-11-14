@@ -17,6 +17,7 @@ import {
   FileCode2,
   FolderOpen,
   ListTree,
+  Mail,
   Pencil,
   Plus,
   Search,
@@ -71,6 +72,7 @@ const tabs = [
   { label: 'Option sets', href: '/database/optionsets', icon: ListTree },
   { label: 'File manager', href: '/database/files', icon: FolderOpen },
   { label: 'SQL', href: '/database/sql', icon: FileCode2 },
+  { label: 'Email', href: '/database/email', icon: Mail },
 ];
 
 function readInitialTable(list: DataTable[]): string {
