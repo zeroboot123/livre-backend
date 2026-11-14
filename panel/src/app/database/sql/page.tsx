@@ -3,7 +3,10 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  BookOpen,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Database,
   Download,
   Eye,
@@ -67,6 +70,60 @@ function downloadTextFile(filename: string, text: string) {
   URL.revokeObjectURL(url);
 }
 
+const MODEL_SCHEMA_SQL = `-- ============================================================
+-- MODELO DE SCHEMA COMPATÍVEL COM O LIVRE BACKEND
+-- ------------------------------------------------------------
+-- Regras principais:
+--   * NÃO crie a tabela "users": ela já existe em todo projeto e é
+--     usada pela autenticação nativa do Livre Backend.
+--   * Toda tabela precisa de "id uuid PRIMARY KEY DEFAULT uuid_generate_v4()".
+--   * "creator", "slug", "created_at" e "updated_at" são adicionados
+--     automaticamente pelo painel se não forem declarados.
+--   * Não use CREATE SCHEMA nem SET search_path: o arquivo é executado
+--     no schema do projeto ativo.
+--   * Não use BEGIN/COMMIT: cada arquivo já roda dentro de uma transação.
+--   * Para ligar dados ao usuário nativo, use REFERENCES users(id).
+--   * Valores monetários: use numeric(14,2), nunca float.
+-- ============================================================
+
+-- Categorias (tabela raiz do exemplo)
+CREATE TABLE IF NOT EXISTS categorias (
+  id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  nome text NOT NULL,
+  descricao text,
+  ativo boolean NOT NULL DEFAULT true,
+  ordem integer NOT NULL DEFAULT 0
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS categorias_nome_idx
+  ON categorias (lower(nome));
+
+-- Produtos: relacionamento com categorias
+CREATE TABLE IF NOT EXISTS produtos (
+  id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  categoria_id uuid REFERENCES categorias(id) ON DELETE SET NULL,
+  nome text NOT NULL,
+  descricao text,
+  preco numeric(14,2) NOT NULL DEFAULT 0,
+  ativo boolean NOT NULL DEFAULT true
+);
+
+CREATE INDEX IF NOT EXISTS produtos_categoria_id_idx ON produtos (categoria_id);
+
+-- Pedidos: relacionamento com a tabela nativa de usuários
+CREATE TABLE IF NOT EXISTS pedidos (
+  id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  usuario_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  produto_id uuid REFERENCES produtos(id) ON DELETE SET NULL,
+  quantidade integer NOT NULL DEFAULT 1,
+  total numeric(14,2) NOT NULL DEFAULT 0,
+  status text NOT NULL DEFAULT 'pendente'
+);
+
+CREATE INDEX IF NOT EXISTS pedidos_usuario_id_idx ON pedidos (usuario_id);
+CREATE INDEX IF NOT EXISTS pedidos_produto_id_idx ON pedidos (produto_id);
+`;
+
 function StatusBadge({ status }: { status: QueueStatus }) {
   if (status === 'success') {
     return (
@@ -103,6 +160,7 @@ function SqlMigrationsInner() {
   const [queue, setQueue] = useState<QueuedFile[]>([]);
   const [running, setRunning] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(true);
 
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorName, setEditorName] = useState('');
@@ -353,6 +411,11 @@ function SqlMigrationsInner() {
     }
   };
 
+  const handleDownloadModel = () => {
+    downloadTextFile('modelo_schema.sql', MODEL_SCHEMA_SQL);
+    notify('Modelo de schema baixado');
+  };
+
   const handleExportSchema = async () => {
     setRunning(true);
     try {
@@ -431,6 +494,75 @@ function SqlMigrationsInner() {
             Comandos destrutivos (<code>DROP</code>, <code>ALTER</code>, <code>DELETE</code>) não
             podem ser desfeitos pelo painel. O histórico fica registrado abaixo.
           </p>
+        </div>
+
+        <div className="mb-3 overflow-hidden rounded border border-blue-200 bg-blue-50">
+          <button
+            type="button"
+            onClick={() => setGuideOpen((value) => !value)}
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-[11px] font-semibold text-blue-800 hover:bg-blue-100"
+          >
+            <BookOpen className="h-3.5 w-3.5 shrink-0" />
+            Guia: schema compatível com o Livre Backend
+            {guideOpen ? (
+              <ChevronUp className="ml-auto h-3.5 w-3.5" />
+            ) : (
+              <ChevronDown className="ml-auto h-3.5 w-3.5" />
+            )}
+          </button>
+          {guideOpen && (
+            <div className="border-t border-blue-200 px-3 py-2 text-[11px] leading-relaxed text-blue-900">
+              <ul className="list-disc space-y-1 pl-4">
+                <li>
+                  A tabela <code className="rounded bg-blue-100 px-1">users</code> já existe em todo
+                  projeto (autenticação nativa). <strong>Não a recrie</strong> no arquivo.
+                </li>
+                <li>
+                  Toda tabela precisa de{' '}
+                  <code className="rounded bg-blue-100 px-1">
+                    id uuid PRIMARY KEY DEFAULT uuid_generate_v4()
+                  </code>
+                  .
+                </li>
+                <li>
+                  <code className="rounded bg-blue-100 px-1">creator</code>,{' '}
+                  <code className="rounded bg-blue-100 px-1">slug</code>,{' '}
+                  <code className="rounded bg-blue-100 px-1">created_at</code> e{' '}
+                  <code className="rounded bg-blue-100 px-1">updated_at</code> são adicionados
+                  automaticamente se faltarem.
+                </li>
+                <li>
+                  Para ligar dados ao usuário nativo use{' '}
+                  <code className="rounded bg-blue-100 px-1">
+                    REFERENCES users(id) ON DELETE SET NULL
+                  </code>
+                  .
+                </li>
+                <li>
+                  Não use{' '}
+                  <code className="rounded bg-blue-100 px-1">CREATE SCHEMA</code>,{' '}
+                  <code className="rounded bg-blue-100 px-1">SET search_path</code> nem{' '}
+                  <code className="rounded bg-blue-100 px-1">BEGIN/COMMIT</code>.
+                </li>
+                <li>
+                  Valores monetários: <code className="rounded bg-blue-100 px-1">numeric(14,2)</code>{' '}
+                  — nunca <code className="rounded bg-blue-100 px-1">float</code>.
+                </li>
+              </ul>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <button
+                  onClick={handleDownloadModel}
+                  className="flex items-center gap-1 rounded border border-blue-300 bg-white px-2.5 py-1 text-[11px] font-medium text-blue-700 hover:bg-blue-100"
+                >
+                  <Download className="h-3 w-3" />
+                  Baixar modelo .sql
+                </button>
+                <span className="text-[10px] text-blue-700">
+                  O modelo cria categorias, produtos e pedidos com relacionamentos.
+                </span>
+              </div>
+            </div>
+          )}
         </div>
 
         <div
