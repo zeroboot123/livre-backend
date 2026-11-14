@@ -104,3 +104,31 @@ export async function grantProjectTable(schema: string, table: string): Promise<
     `GRANT SELECT, INSERT, UPDATE, DELETE ON ${qident(schema)}.${qident(table)} TO authenticated`
   );
 }
+
+/**
+ * Reseta o "banco de dados" do projeto: remove todos os objetos do schema
+ * (tabelas, views, funções, tipos e sequências) e recria a estrutura nativa,
+ * incluindo a tabela `users`.
+ *
+ * Também limpa metadados que apontam para objetos removidos: histórico de
+ * migrations, regras de privacidade (RLS) e tabelas expostas na API. Tokens,
+ * arquivos e configurações do projeto são preservados.
+ */
+export async function resetProjectSchema(schema: string, projectId: string): Promise<void> {
+  if (!/^proj_[a-z0-9_]+$/.test(schema)) {
+    throw new Error('Schema de projeto inválido.');
+  }
+
+  // CASCADE remove tabelas, views, funções, tipos, sequências, políticas etc.
+  await sql.unsafe(`DROP SCHEMA IF EXISTS ${qident(schema)} CASCADE`);
+  await ensureProjectSchema(schema);
+
+  await sql`DELETE FROM livre_auth.sql_migrations WHERE project_id = ${projectId}`;
+  await sql`DELETE FROM livre_auth.project_api_exposed_tables WHERE project_id = ${projectId}`;
+  await sql`DELETE FROM livre_auth.rls_rules WHERE project_id = ${projectId}`;
+  await sql`
+    UPDATE livre_auth.files
+    SET attached_table = NULL, attached_id = NULL
+    WHERE project_id = ${projectId}
+  `;
+}

@@ -14,6 +14,7 @@ import {
   Loader2,
   Play,
   RefreshCw,
+  RotateCcw,
   Trash2,
   Upload,
   XCircle,
@@ -26,6 +27,7 @@ import {
   exportProjectSchema,
   fetchMigration,
   fetchMigrations,
+  resetProjectSchema,
   retryMigration,
   runSqlMigration,
   type SqlMigration,
@@ -161,6 +163,9 @@ function SqlMigrationsInner() {
   const [running, setRunning] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [guideOpen, setGuideOpen] = useState(true);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetConfirm, setResetConfirm] = useState('');
+  const [resetting, setResetting] = useState(false);
 
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorName, setEditorName] = useState('');
@@ -416,6 +421,23 @@ function SqlMigrationsInner() {
     notify('Modelo de schema baixado');
   };
 
+  const handleResetSchema = async () => {
+    if (resetConfirm.trim().toUpperCase() !== 'RESETAR') return;
+    setResetting(true);
+    try {
+      await resetProjectSchema();
+      setResetOpen(false);
+      setResetConfirm('');
+      setQueue([]);
+      await loadHistory().catch(() => {});
+      notify('Schema resetado. Apenas a tabela nativa users permanece.');
+    } catch (err: any) {
+      notify(err?.message || 'Erro ao resetar schema', 'error');
+    } finally {
+      setResetting(false);
+    }
+  };
+
   const handleExportSchema = async () => {
     setRunning(true);
     try {
@@ -456,6 +478,17 @@ function SqlMigrationsInner() {
             >
               <Download className="h-3 w-3" />
               Exportar schema
+            </button>
+            <button
+              onClick={() => {
+                setResetConfirm('');
+                setResetOpen(true);
+              }}
+              disabled={running}
+              className="flex items-center gap-1 rounded border border-red-300 bg-white px-2.5 py-1 text-[11px] text-red-600 hover:bg-red-50 disabled:opacity-50"
+            >
+              <RotateCcw className="h-3 w-3" />
+              Resetar schema
             </button>
             <button
               onClick={openEditor}
@@ -831,6 +864,66 @@ function SqlMigrationsInner() {
             </div>
           </div>
         )}
+      </Modal>
+
+      <Modal
+        open={resetOpen}
+        onClose={() => {
+          if (!resetting) setResetOpen(false);
+        }}
+        title="Resetar schema do projeto"
+        size="md"
+      >
+        <div className="space-y-3 text-[12px] text-slate-700">
+          <div className="flex items-start gap-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-700">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <p>
+              Isso apaga <strong>todas as tabelas e todos os dados</strong> do projeto,
+              incluindo a tabela nativa <code className="rounded bg-red-100 px-1">users</code>,
+              além de views, funções e tipos. O histórico de migrations, as regras de
+              privacidade e as tabelas expostas na API também serão limpos. Tokens de API,
+              arquivos e configurações do projeto são mantidos.
+            </p>
+          </div>
+          <p>
+            Esta ação <strong>não pode ser desfeita</strong>. O schema voltará apenas com a
+            estrutura nativa (tabela <code className="rounded bg-slate-100 px-1">users</code>{' '}
+            vazia).
+          </p>
+          <div>
+            <label className="mb-1 block text-[11px] font-medium text-slate-700">
+              Digite <code className="rounded bg-slate-100 px-1">RESETAR</code> para confirmar
+            </label>
+            <input
+              value={resetConfirm}
+              onChange={(e) => setResetConfirm(e.target.value)}
+              autoFocus
+              placeholder="RESETAR"
+              className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-[12px] focus:border-red-500 focus:outline-none"
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-1">
+            <button
+              onClick={() => setResetOpen(false)}
+              disabled={resetting}
+              className="rounded border border-slate-300 bg-white px-3 py-1.5 text-[12px] text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={handleResetSchema}
+              disabled={resetting || resetConfirm.trim().toUpperCase() !== 'RESETAR'}
+              className="flex items-center gap-1 rounded bg-red-600 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-red-700 disabled:opacity-40"
+            >
+              {resetting ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RotateCcw className="h-3.5 w-3.5" />
+              )}
+              Resetar schema
+            </button>
+          </div>
+        </div>
       </Modal>
 
       <Toast
