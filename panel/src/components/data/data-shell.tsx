@@ -333,40 +333,6 @@ export function DataShell({
                 </>
               )}
             </div>
-
-            <span className="hidden items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-700 sm:flex">
-              <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-              Development version
-            </span>
-            <button
-              onClick={() => setEnvOpen((v) => !v)}
-              className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-            >
-              Switch to live database
-              <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
-            </button>
-
-            {envOpen && (
-              <>
-                <div className="fixed inset-0 z-30" onClick={() => setEnvOpen(false)} />
-                <div className="absolute right-0 top-full z-40 mt-2 w-64 rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg">
-                  <div className="flex items-start gap-2 rounded-lg bg-slate-50 px-2.5 py-2">
-                    <span className="mt-1 h-2 w-2 rounded-full bg-amber-500" />
-                    <div>
-                      <p className="text-xs font-semibold text-slate-800">Development version</p>
-                      <p className="text-[11px] text-slate-500">Ambiente ativo</p>
-                    </div>
-                  </div>
-                  <div className="flex items-start gap-2 px-2.5 py-2 opacity-60">
-                    <span className="mt-1 h-2 w-2 rounded-full bg-slate-300" />
-                    <div>
-                      <p className="text-xs font-semibold text-slate-800">Live database</p>
-                      <p className="text-[11px] text-slate-500">Ainda não configurado</p>
-                    </div>
-                  </div>
-                </div>
-              </>
-            )}
           </div>
         </div>
 
