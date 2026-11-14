@@ -291,10 +291,10 @@ export async function exportProjectSchema(): Promise<{ filename: string; sql: st
 }
 
 /** Apaga todos os data types/dados do projeto e recria apenas a estrutura nativa. */
-export async function resetProjectSchema(): Promise<{ schema: string }> {
+export async function resetProjectSchema(password: string): Promise<{ schema: string }> {
   const data = await apiFetch('/schema/reset', {
     method: 'POST',
-    body: JSON.stringify({ confirmation: 'RESETAR' }),
+    body: JSON.stringify({ password }),
   });
   return { schema: data.schema };
 }

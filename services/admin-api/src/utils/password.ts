@@ -1,4 +1,5 @@
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import argon2 from 'argon2';
 
 /**
  * Hash de senha com scrypt (nativo do Node, sem dependências extras).
@@ -23,4 +24,23 @@ export function verifyPassword(password: string, stored: string | null | undefin
   } catch {
     return false;
   }
+}
+
+/**
+ * Confere a senha de um usuário do painel (livre_auth.users). O auth-service
+ * grava Argon2; mantemos compatibilidade com hashes scrypt antigos.
+ */
+export async function verifyAdminPassword(
+  password: string,
+  stored: string | null | undefined
+): Promise<boolean> {
+  if (!stored || typeof stored !== 'string') return false;
+  if (stored.startsWith('$argon2')) {
+    try {
+      return await argon2.verify(stored, password);
+    } catch {
+      return false;
+    }
+  }
+  return verifyPassword(password, stored);
 }

@@ -9,7 +9,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { sql } from './db/pool.js';
 import { signToken, verifyToken } from './utils/crypto.js';
-import { hashPassword, verifyPassword } from './utils/password.js';
+import { hashPassword, verifyPassword, verifyAdminPassword } from './utils/password.js';
 import { BUILTIN_FIELDS, USER_BUILTIN_FIELDS, ensureProjectSchema, resetProjectSchema } from './db/project-schema.js';
 import { runMigrations } from './db/migrate.js';
 import {
@@ -65,6 +65,22 @@ app.addHook('preHandler', async (request, reply) => {
     return reply.code(401).send({ error: 'Token inválido' });
   }
 });
+
+/**
+ * Confere a senha do administrador logado (dono do token do painel).
+ * Usada como confirmação em operações destrutivas (reset/exclusão de projeto).
+ */
+async function confirmAdminPassword(request: any, password: unknown): Promise<boolean> {
+  const value = String(password ?? '');
+  const userId = (request as any).user?.sub;
+  if (!value || !userId) return false;
+
+  const [admin] = (await sql`
+    SELECT password_hash FROM livre_auth.users WHERE id = ${userId} LIMIT 1
+  `) as any[];
+
+  return verifyAdminPassword(value, admin?.password_hash);
+}
 
 // Health
 app.get('/health', async () => ({
@@ -159,6 +175,10 @@ app.delete('/projects/:id', async (request: any, reply) => {
   const id = String(request.params?.id || '');
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
     return reply.code(400).send({ error: 'ID de projeto inválido' });
+  }
+
+  if (!(await confirmAdminPassword(request, request.body?.password))) {
+    return reply.code(403).send({ error: 'Senha do administrador incorreta.' });
   }
 
   try {
@@ -740,8 +760,8 @@ app.post('/schema/reset', async (request: any, reply) => {
   const ctx = await requireProject(request, reply);
   if (!ctx) return;
 
-  if (String(request.body?.confirmation || '').trim().toUpperCase() !== 'RESETAR') {
-    return reply.code(400).send({ error: 'Digite RESETAR para confirmar a operação.' });
+  if (!(await confirmAdminPassword(request, request.body?.password))) {
+    return reply.code(403).send({ error: 'Senha do administrador incorreta.' });
   }
 
   try {

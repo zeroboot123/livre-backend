@@ -164,7 +164,7 @@ function SqlMigrationsInner() {
   const [dragOver, setDragOver] = useState(false);
   const [guideOpen, setGuideOpen] = useState(true);
   const [resetOpen, setResetOpen] = useState(false);
-  const [resetConfirm, setResetConfirm] = useState('');
+  const [resetPassword, setResetPassword] = useState('');
   const [resetting, setResetting] = useState(false);
 
   const [editorOpen, setEditorOpen] = useState(false);
@@ -422,12 +422,12 @@ function SqlMigrationsInner() {
   };
 
   const handleResetSchema = async () => {
-    if (resetConfirm.trim().toUpperCase() !== 'RESETAR') return;
+    if (!resetPassword.trim()) return;
     setResetting(true);
     try {
-      await resetProjectSchema();
+      await resetProjectSchema(resetPassword);
       setResetOpen(false);
-      setResetConfirm('');
+      setResetPassword('');
       setQueue([]);
       await loadHistory().catch(() => {});
       notify('Schema resetado. Apenas a tabela nativa users permanece.');
@@ -481,7 +481,7 @@ function SqlMigrationsInner() {
             </button>
             <button
               onClick={() => {
-                setResetConfirm('');
+                setResetPassword('');
                 setResetOpen(true);
               }}
               disabled={running}
@@ -892,13 +892,15 @@ function SqlMigrationsInner() {
           </p>
           <div>
             <label className="mb-1 block text-[11px] font-medium text-slate-700">
-              Digite <code className="rounded bg-slate-100 px-1">RESETAR</code> para confirmar
+              Digite a senha do administrador para confirmar
             </label>
             <input
-              value={resetConfirm}
-              onChange={(e) => setResetConfirm(e.target.value)}
+              type="password"
+              value={resetPassword}
+              onChange={(e) => setResetPassword(e.target.value)}
               autoFocus
-              placeholder="RESETAR"
+              autoComplete="current-password"
+              placeholder="Senha do administrador"
               className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-[12px] focus:border-red-500 focus:outline-none"
             />
           </div>
@@ -912,7 +914,7 @@ function SqlMigrationsInner() {
             </button>
             <button
               onClick={handleResetSchema}
-              disabled={resetting || resetConfirm.trim().toUpperCase() !== 'RESETAR'}
+              disabled={resetting || !resetPassword.trim()}
               className="flex items-center gap-1 rounded bg-red-600 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-red-700 disabled:opacity-40"
             >
               {resetting ? (
