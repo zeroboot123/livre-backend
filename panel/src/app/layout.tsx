@@ -56,7 +56,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-[#F8FAFC]">
       <Sidebar collapsed={collapsed} onToggle={() => setSidebarCollapsed(!sidebarCollapsed)} />
       <Header collapsed={collapsed} />
-      <main className={`pt-14 sidebar-transition ${collapsed ? 'pl-16' : 'pl-60'}`}>
+      <main className={`pt-14 sidebar-transition ${collapsed ? 'pl-16' : 'pl-60'} h-screen overflow-y-auto`}>
         <div className="p-6">
           {children}
         </div>
