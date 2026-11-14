@@ -290,6 +290,15 @@ export async function exportProjectSchema(): Promise<{ filename: string; sql: st
   return { filename: data.filename, sql: data.sql };
 }
 
+/** Apaga todos os data types/dados do projeto e recria apenas a estrutura nativa. */
+export async function resetProjectSchema(): Promise<{ schema: string }> {
+  const data = await apiFetch('/schema/reset', {
+    method: 'POST',
+    body: JSON.stringify({ confirmation: 'RESETAR' }),
+  });
+  return { schema: data.schema };
+}
+
 // ============================================================
 // File manager
 // ============================================================

@@ -10,7 +10,7 @@ import {
 import { sql } from './db/pool.js';
 import { signToken, verifyToken } from './utils/crypto.js';
 import { hashPassword, verifyPassword } from './utils/password.js';
-import { BUILTIN_FIELDS, USER_BUILTIN_FIELDS, ensureProjectSchema } from './db/project-schema.js';
+import { BUILTIN_FIELDS, USER_BUILTIN_FIELDS, ensureProjectSchema, resetProjectSchema } from './db/project-schema.js';
 import { runMigrations } from './db/migrate.js';
 import {
   deleteMigration,
@@ -731,6 +731,24 @@ app.post('/schema', async (request: any, reply) => {
     return { ok: true, name };
   } catch (err: any) {
     return reply.code(400).send({ error: err.message });
+  }
+});
+
+// Resetar o schema do projeto: remove TODAS as tabelas, dados, views, funções
+// e tipos, recriando apenas a estrutura nativa (tabela `users`).
+app.post('/schema/reset', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+
+  if (String(request.body?.confirmation || '').trim().toUpperCase() !== 'RESETAR') {
+    return reply.code(400).send({ error: 'Digite RESETAR para confirmar a operação.' });
+  }
+
+  try {
+    await resetProjectSchema(ctx.schema, ctx.projectId);
+    return { ok: true, schema: ctx.schema };
+  } catch (err: any) {
+    return reply.code(400).send({ error: err.message || 'Erro ao resetar schema' });
   }
 });
 
