@@ -14,6 +14,7 @@ import {
   ChevronDown,
   Code2,
   Eye,
+  FileCode2,
   FolderOpen,
   ListTree,
   Pencil,
@@ -69,6 +70,7 @@ const tabs = [
   { label: 'API', href: '/database/api', icon: Code2 },
   { label: 'Option sets', href: '/database/optionsets', icon: ListTree },
   { label: 'File manager', href: '/database/files', icon: FolderOpen },
+  { label: 'SQL', href: '/database/sql', icon: FileCode2 },
 ];
 
 function readInitialTable(list: DataTable[]): string {

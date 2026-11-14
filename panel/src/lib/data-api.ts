@@ -235,6 +235,62 @@ export async function deleteOption(setId: string, optionId: string) {
 }
 
 // ============================================================
+// SQL migrations
+// ============================================================
+export interface SqlMigration {
+  id: string;
+  project_id?: string;
+  filename: string;
+  checksum: string;
+  status: 'running' | 'success' | 'error';
+  statements: number;
+  duration_ms: number | null;
+  error: string | null;
+  executed_at: string | null;
+  created_at: string;
+  sql_text?: string;
+}
+
+export async function fetchMigrations(): Promise<SqlMigration[]> {
+  const data = await apiFetch('/migrations');
+  return data.migrations ?? [];
+}
+
+export async function runSqlMigration(
+  filename: string,
+  sqlText: string,
+  force = false
+): Promise<SqlMigration> {
+  const data = await apiFetch('/migrations', {
+    method: 'POST',
+    body: JSON.stringify({ filename, sql: sqlText, force }),
+  });
+  return data.migration as SqlMigration;
+}
+
+export async function fetchMigration(id: string): Promise<SqlMigration> {
+  const data = await apiFetch(`/migrations/${encodeURIComponent(id)}`);
+  return data.migration as SqlMigration;
+}
+
+export async function retryMigration(id: string): Promise<SqlMigration> {
+  const data = await apiFetch(`/migrations/${encodeURIComponent(id)}/retry`, {
+    method: 'POST',
+  });
+  return data.migration as SqlMigration;
+}
+
+export async function deleteMigration(id: string) {
+  return apiFetch(`/migrations/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/** Gera o dump DDL do schema do projeto (para baixar como .sql). */
+export async function exportProjectSchema(): Promise<{ filename: string; sql: string }> {
+  const data = await apiFetch('/migrations/export');
+  return { filename: data.filename, sql: data.sql };
+}
+
+// ============================================================
 // File manager
 // ============================================================
 export interface StoredFile {

@@ -7,6 +7,8 @@ import { useAuth } from '@/lib/auth-context';
 import { getActiveProjectName } from '@/lib/projects';
 import { authFetch } from '@/lib/api-client';
 import { Modal } from '@/components/ui/Modal';
+import Image from 'next/image';
+import logoSrc from '@/../public/logo-icon.png';
 
 type MenuSection = {
   label: string;
@@ -49,20 +51,18 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
         sidebar-transition ${collapsed ? 'w-16' : 'w-60'}
       `}
     >
-      {/* Logo */}
-      <div className="h-14 flex items-center px-4 border-b border-[#1E293B]">
+      {/* Logo — barra clara para dar contraste ao logotipo */}
+      <div className="h-14 flex items-center px-4 border-b border-[#E2E8F0] bg-[#F8FAFC]">
         <div className="flex items-center gap-3 min-w-0">
-          <div className="w-7 h-7 bg-[#2563EB] rounded-lg flex items-center justify-center text-white text-xs font-bold shrink-0">
-            L
-          </div>
+          <Image src={logoSrc} alt="Livre Backend" className="h-7 w-7 shrink-0 object-contain" />
           {!collapsed && (
             <div className="min-w-0">
-              <p className="text-sm font-semibold text-white truncate">Livre Backend</p>
+              <p className="text-sm font-semibold text-[#0F172A] truncate">Livre Backend</p>
               <p className="text-[10px] text-[#64748B]">Plataforma BaaS</p>
             </div>
           )}
         </div>
-        <button onClick={onToggle} className="ml-auto text-[#475569] hover:text-white p-1 rounded-md hover:bg-[#1E293B] shrink-0">
+        <button onClick={onToggle} className="ml-auto text-[#64748B] hover:text-[#0F172A] p-1 rounded-md hover:bg-[#E2E8F0] shrink-0">
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={collapsed ? "M13 5l7 7-7 7M5 5l7 7-7 7" : "M11 19l-7-7 7-7m8 14l-7-7 7-7"} />
           </svg>
@@ -140,12 +140,14 @@ export function Header({ collapsed }: { collapsed: boolean }) {
     highlight: false,
   }));
 
-  // Dentro da área de dados, mostra o nome do projeto ativo (ex: database / datatypes / Loja).
+  // Dentro da área de dados, mostra o nome do projeto entre "Database" e a aba atual
+  // (ex: database / zeroboot / optionsets).
   const showProject = !!projectName && pathname.startsWith('/database');
   const breadcrumbs = showProject
     ? [
-        ...crumbs.map((c) => ({ ...c, isLast: false })),
-        { label: projectName, href: pathname, isLast: true, highlight: true },
+        { ...crumbs[0], isLast: false },
+        { label: projectName, href: pathname, isLast: false, highlight: true },
+        ...crumbs.slice(1).map((c, i, arr) => ({ ...c, isLast: i === arr.length - 1 })),
       ]
     : crumbs;
 
