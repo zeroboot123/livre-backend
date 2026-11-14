@@ -13,6 +13,13 @@ import { hashPassword, verifyPassword } from './utils/password.js';
 import { BUILTIN_FIELDS, USER_BUILTIN_FIELDS, ensureProjectSchema } from './db/project-schema.js';
 import { runMigrations } from './db/migrate.js';
 import {
+  deleteMigration,
+  executeSqlMigration,
+  exportProjectSchema,
+  getMigration,
+  listMigrations,
+} from './services/sql-migrations.js';
+import {
   BUCKET,
   MAX_UPLOAD_MB,
   ensureBucket,
@@ -1200,6 +1207,105 @@ app.delete('/option-sets/:id/options/:optionId', async (request: any, reply) => 
     RETURNING id
   `;
   if (!row) return reply.code(404).send({ error: 'Opção não encontrada' });
+  return { ok: true };
+});
+
+// ============================================================
+// SQL MIGRATIONS (arquivos .sql executados no schema do projeto)
+// ============================================================
+
+// Histórico de migrations do projeto ativo.
+app.get('/migrations', async (request: any, reply: any) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+  return { migrations: await listMigrations(ctx.projectId) };
+});
+
+// Exporta o schema do projeto como um arquivo .sql (DDL PostgreSQL).
+// Precisa vir antes de /migrations/:id para não ser interpretado como um ID.
+app.get('/migrations/export', async (request: any, reply: any) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+  try {
+    return await exportProjectSchema(ctx);
+  } catch (err: any) {
+    return reply.code(400).send({ error: err.message });
+  }
+});
+
+// Detalhe (inclui o SQL original, para visualizar/baixar).
+app.get('/migrations/:id', async (request: any, reply: any) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+  if (!UUID_RE.test(String(request.params.id))) {
+    return reply.code(400).send({ error: 'ID inválido' });
+  }
+  const migration = await getMigration(ctx.projectId, request.params.id);
+  if (!migration) return reply.code(404).send({ error: 'Migration não encontrada' });
+  return { migration };
+});
+
+// Executa um arquivo SQL (enviado pelo painel como texto).
+app.post('/migrations', async (request: any, reply: any) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+  const { filename, sql: sqlText, force } = request.body || {};
+
+  try {
+    const migration = await executeSqlMigration(ctx, filename, sqlText, {
+      force: force === true,
+    });
+    return { migration };
+  } catch (err: any) {
+    return reply.code(400).send({
+      error: err.message,
+      migrationId: err.migrationId,
+      statements: err.statements,
+      durationMs: err.durationMs,
+    });
+  }
+});
+
+// Reexecuta o SQL de uma migration que falhou.
+app.post('/migrations/:id/retry', async (request: any, reply: any) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+  if (!UUID_RE.test(String(request.params.id))) {
+    return reply.code(400).send({ error: 'ID inválido' });
+  }
+  const migration = await getMigration(ctx.projectId, request.params.id);
+  if (!migration) return reply.code(404).send({ error: 'Migration não encontrada' });
+  if (migration.status === 'success') {
+    return reply.code(409).send({ error: 'Esta migration já foi aplicada com sucesso.' });
+  }
+
+  try {
+    const applied = await executeSqlMigration(
+      ctx,
+      migration.filename,
+      migration.sql_text,
+      { force: true }
+    );
+    return { migration: applied };
+  } catch (err: any) {
+    return reply.code(400).send({
+      error: err.message,
+      migrationId: err.migrationId,
+      statements: err.statements,
+      durationMs: err.durationMs,
+    });
+  }
+});
+
+// Remove apenas o registro do histórico (não desfaz o SQL aplicado).
+app.delete('/migrations/:id', async (request: any, reply: any) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+  if (!UUID_RE.test(String(request.params.id))) {
+    return reply.code(400).send({ error: 'ID inválido' });
+  }
+  const removed = await deleteMigration(ctx.projectId, request.params.id);
+  if (!removed) return reply.code(404).send({ error: 'Migration não encontrada' });
   return { ok: true };
 });
 

@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import { useAuth } from '@/lib/auth-context';
+import logo from '@/../public/logo-mark.png';
 
 const AUTH_URL =
   process.env.NEXT_PUBLIC_AUTH_URL || 'https://livrebackend.gerbox.com.br/auth';
@@ -69,9 +71,7 @@ export default function RegisterPage() {
     <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center p-4">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-12 h-12 bg-[#2563EB] rounded-2xl mb-4">
-            <span className="text-white text-xl font-bold">L</span>
-          </div>
+          <Image src={logo} alt="Livre Backend" className="mx-auto mb-4 h-24 w-auto" />
           <h1 className="text-2xl font-bold text-[#0F172A]">Criar administrador</h1>
           <p className="text-sm text-[#64748B] mt-1">
             Configure o primeiro acesso à plataforma

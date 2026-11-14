@@ -182,6 +182,36 @@ export async function runMigrations() {
     )
   `;
 
+  // ── SQL migrations (arquivos .sql enviados pelo painel) ────
+  await sql`
+    CREATE TABLE IF NOT EXISTS livre_auth.sql_migrations (
+      id          uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+      project_id  uuid NOT NULL REFERENCES livre_auth.projects(id) ON DELETE CASCADE,
+      filename    text NOT NULL,
+      checksum    text NOT NULL,
+      sql_text    text NOT NULL,
+      status      text NOT NULL DEFAULT 'running',
+      statements  int NOT NULL DEFAULT 0,
+      duration_ms int,
+      error       text,
+      executed_at timestamptz,
+      created_at  timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_sql_migrations_project
+      ON livre_auth.sql_migrations(project_id, created_at DESC)
+  `;
+
+  // Uma mesma migration bem-sucedida não pode ser aplicada duas vezes.
+  // Migrations com erro continuam livres para correção e nova tentativa.
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_sql_migrations_applied
+      ON livre_auth.sql_migrations(project_id, filename)
+      WHERE status = 'success'
+  `;
+
   // ── Backfill: garante um schema para projetos antigos ───────
   const sanitize = (value: string) => {
     const base = String(value || '')
