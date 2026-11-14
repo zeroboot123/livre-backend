@@ -80,9 +80,15 @@ export async function createTable(name: string) {
   });
 }
 
+export async function deleteTable(name: string) {
+  return apiFetch(`/schema/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  });
+}
+
 export async function addColumn(
   table: string,
-  values: { name: string; type: string; required?: boolean; unique?: boolean }
+  values: { name: string; type: string; required?: boolean; unique?: boolean; references?: string }
 ) {
   return apiFetch(`/schema/${encodeURIComponent(table)}/columns`, {
     method: 'POST',
@@ -229,6 +235,62 @@ export async function deleteOption(setId: string, optionId: string) {
 }
 
 // ============================================================
+// SQL migrations
+// ============================================================
+export interface SqlMigration {
+  id: string;
+  project_id?: string;
+  filename: string;
+  checksum: string;
+  status: 'running' | 'success' | 'error';
+  statements: number;
+  duration_ms: number | null;
+  error: string | null;
+  executed_at: string | null;
+  created_at: string;
+  sql_text?: string;
+}
+
+export async function fetchMigrations(): Promise<SqlMigration[]> {
+  const data = await apiFetch('/migrations');
+  return data.migrations ?? [];
+}
+
+export async function runSqlMigration(
+  filename: string,
+  sqlText: string,
+  force = false
+): Promise<SqlMigration> {
+  const data = await apiFetch('/migrations', {
+    method: 'POST',
+    body: JSON.stringify({ filename, sql: sqlText, force }),
+  });
+  return data.migration as SqlMigration;
+}
+
+export async function fetchMigration(id: string): Promise<SqlMigration> {
+  const data = await apiFetch(`/migrations/${encodeURIComponent(id)}`);
+  return data.migration as SqlMigration;
+}
+
+export async function retryMigration(id: string): Promise<SqlMigration> {
+  const data = await apiFetch(`/migrations/${encodeURIComponent(id)}/retry`, {
+    method: 'POST',
+  });
+  return data.migration as SqlMigration;
+}
+
+export async function deleteMigration(id: string) {
+  return apiFetch(`/migrations/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/** Gera o dump DDL do schema do projeto (para baixar como .sql). */
+export async function exportProjectSchema(): Promise<{ filename: string; sql: string }> {
+  const data = await apiFetch('/migrations/export');
+  return { filename: data.filename, sql: data.sql };
+}
+
+// ============================================================
 // File manager
 // ============================================================
 export interface StoredFile {
@@ -249,8 +311,13 @@ function apiBase() {
 }
 
 function authHeader(): Record<string, string> {
-  const token = typeof window !== 'undefined' ? localStorage.getItem('access_token') : null;
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  if (typeof window === 'undefined') return {};
+  const token = localStorage.getItem('access_token');
+  const projectId = localStorage.getItem('livre_project_id');
+  return {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(projectId ? { 'X-Project-Id': projectId } : {}),
+  };
 }
 
 export async function fetchFiles(
@@ -311,6 +378,19 @@ export async function deleteFiles(ids: string[]) {
     method: 'DELETE',
     body: JSON.stringify({ ids }),
   });
+}
+
+/** URL pública e permanente do arquivo (funciona em <img src> e compartilhamento). */
+export function publicFileUrl(id: string) {
+  return `${apiBase()}/public/files/${encodeURIComponent(id)}`;
+}
+
+/** Alterna a visibilidade pública/privada de um arquivo. */
+export async function toggleFileVisibility(id: string): Promise<{ is_private: boolean }> {
+  const data = await apiFetch(`/files/${encodeURIComponent(id)}/visibility`, {
+    method: 'PATCH',
+  });
+  return { is_private: data.file?.is_private ?? true };
 }
 
 export async function downloadFile(id: string, fileName: string) {

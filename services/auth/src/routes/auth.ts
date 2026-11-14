@@ -1,13 +1,38 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { register, login, refresh, logout, forgotPassword, resetPassword } from '../services/auth.service.js';
+import {
+  register,
+  login,
+  refresh,
+  logout,
+  forgotPassword,
+  resetPassword,
+  getSetupStatus,
+  createUser,
+  changePassword,
+  setUserPassword,
+} from '../services/auth.service.js';
 import { getUser } from '../services/user.service.js';
+import { authMiddleware } from '../middleware/auth.js';
 
 // Schemas de validação
 const registerSchema = z.object({
   email: z.string().email('Email inválido'),
   password: z.string().min(8, 'Senha deve ter no mínimo 8 caracteres'),
   name: z.string().min(2, 'Nome deve ter no mínimo 2 caracteres'),
+});
+
+const createUserSchema = registerSchema.extend({
+  role: z.enum(['admin', 'user']).optional(),
+});
+
+const changePasswordSchema = z.object({
+  current_password: z.string().min(1, 'Senha atual é obrigatória'),
+  new_password: z.string().min(8, 'Nova senha deve ter no mínimo 8 caracteres'),
+});
+
+const setPasswordSchema = z.object({
+  password: z.string().min(8, 'Senha deve ter no mínimo 8 caracteres'),
 });
 
 const loginSchema = z.object({
@@ -29,12 +54,55 @@ const resetPasswordSchema = z.object({
 });
 
 export async function authRoutes(app: FastifyInstance) {
-  // POST /auth/register
+  // GET /auth/setup/status - Indica se o primeiro administrador ainda precisa ser criado.
+  app.get('/setup/status', async () => getSetupStatus());
+
+  // POST /auth/register - Somente para o primeiro administrador da instalação.
   app.post('/register', async (request, reply) => {
     const body = registerSchema.parse(request.body);
     const result = await register(body);
     return reply.code(201).send(result);
   });
+
+  // POST /auth/users - Criação de usuários do sistema pelo painel.
+  app.post('/users', { preHandler: authMiddleware }, async (request, reply) => {
+    const body = createUserSchema.parse(request.body);
+    try {
+      const result = await createUser(body);
+      return reply.code(201).send(result);
+    } catch (err: any) {
+      if (err?.code === '23505') {
+        return reply.code(409).send({ error: 'Já existe um usuário com esse email' });
+      }
+      throw err;
+    }
+  });
+
+  // POST /auth/change-password - Alteração da própria senha.
+  app.post(
+    '/change-password',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const body = changePasswordSchema.parse(request.body);
+      const result = await changePassword(
+        request.user!.sub,
+        body.current_password,
+        body.new_password
+      );
+      return reply.send(result);
+    }
+  );
+
+  // POST /auth/users/:id/password - Redefinição de senha pelo painel.
+  app.post(
+    '/users/:id/password',
+    { preHandler: authMiddleware },
+    async (request: any, reply) => {
+      const body = setPasswordSchema.parse(request.body);
+      const result = await setUserPassword(request.params.id, body.password);
+      return reply.send(result);
+    }
+  );
 
   // POST /auth/login
   app.post('/login', async (request, reply) => {

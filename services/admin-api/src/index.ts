@@ -8,8 +8,17 @@ import {
   DeleteObjectCommand,
 } from '@aws-sdk/client-s3';
 import { sql } from './db/pool.js';
-import { verifyToken } from './utils/crypto.js';
+import { signToken, verifyToken } from './utils/crypto.js';
+import { hashPassword, verifyPassword } from './utils/password.js';
+import { BUILTIN_FIELDS, USER_BUILTIN_FIELDS, ensureProjectSchema } from './db/project-schema.js';
 import { runMigrations } from './db/migrate.js';
+import {
+  deleteMigration,
+  executeSqlMigration,
+  exportProjectSchema,
+  getMigration,
+  listMigrations,
+} from './services/sql-migrations.js';
 import {
   BUCKET,
   MAX_UPLOAD_MB,
@@ -122,8 +131,7 @@ app.post('/projects', async (request: any, reply) => {
   }
 
   try {
-    await sql.unsafe(`CREATE SCHEMA IF NOT EXISTS ${qident(schemaName)}`);
-    await sql.unsafe(`GRANT USAGE ON SCHEMA ${qident(schemaName)} TO authenticated`);
+    await ensureProjectSchema(schemaName);
 
     const [project] = (await sql`
       INSERT INTO livre_auth.projects (name, slug, schema_name, description)
@@ -143,6 +151,82 @@ app.post('/projects', async (request: any, reply) => {
       return reply.code(409).send({ error: 'Já existe um projeto com esse nome' });
     }
     return reply.code(400).send({ error: err.message });
+  }
+});
+
+// Excluir projeto (schema dedicado + metadados vinculados)
+app.delete('/projects/:id', async (request: any, reply) => {
+  const id = String(request.params?.id || '');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    return reply.code(400).send({ error: 'ID de projeto inválido' });
+  }
+
+  try {
+    const result = await sql.begin(async (tx: any) => {
+      const [project] = (await tx`
+        SELECT id, name, slug, schema_name
+        FROM livre_auth.projects
+        WHERE id = ${id}
+        FOR UPDATE
+      `) as any[];
+      if (!project) return null;
+
+      // Objetos do storage (remoção best-effort após o commit).
+      const files = (await tx`
+        SELECT bucket, object_key FROM livre_auth.files WHERE project_id = ${id}
+      `) as any[];
+
+      // Metadados específicos do projeto.
+      await tx`DELETE FROM livre_auth.project_api_exposed_tables WHERE project_id = ${id}`;
+      await tx`DELETE FROM livre_auth.rls_rules WHERE project_id = ${id}`;
+      await tx`DELETE FROM livre_auth.api_tokens WHERE project_id = ${id}`;
+      await tx`DELETE FROM livre_auth.option_sets WHERE project_id = ${id}`;
+      await tx`DELETE FROM livre_auth.files WHERE project_id = ${id}`;
+      await tx`DELETE FROM livre_auth.project_api_settings WHERE project_id = ${id}`;
+      await tx`DELETE FROM livre_auth.project_users WHERE project_id = ${id}`;
+      await tx`DELETE FROM livre_auth.tenants WHERE project_id = ${id}`;
+      await tx`DELETE FROM livre_auth.audit_log WHERE project_id = ${id}`;
+
+      // Remove o "banco de dados" do projeto. CASCADE elimina tabelas,
+      // índices, políticas e demais objetos criados dentro do schema.
+      if (project.schema_name) {
+        await tx.unsafe(`DROP SCHEMA IF EXISTS ${qident(project.schema_name)} CASCADE`);
+      }
+
+      await tx`DELETE FROM livre_auth.projects WHERE id = ${id}`;
+      return { project, files };
+    });
+
+    if (!result) {
+      return reply.code(404).send({ error: 'Projeto não encontrado' });
+    }
+
+    // Limpa os arquivos do storage sem impedir a exclusão do projeto.
+    for (const file of result.files) {
+      try {
+        await s3.send(
+          new DeleteObjectCommand({ Bucket: file.bucket, Key: file.object_key })
+        );
+      } catch {
+        /* objeto já inexistente ou storage indisponível */
+      }
+    }
+
+    return {
+      ok: true,
+      deleted: {
+        id: result.project.id,
+        name: result.project.name,
+        schema_name: result.project.schema_name,
+      },
+    };
+  } catch (err: any) {
+    if (err?.code === '23503' || err?.code === '2BP01') {
+      return reply.code(409).send({
+        error: 'Não foi possível excluir o projeto porque existem dependências vinculadas a ele.',
+      });
+    }
+    return reply.code(500).send({ error: err.message || 'Erro ao excluir projeto' });
   }
 });
 
@@ -198,6 +282,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 const HIDDEN_COLUMNS = new Set([
   'password_hash',
+  'email_confirmed',
+  'token_version',
   'refresh_token',
   'refresh_token_hash',
   'email_token',
@@ -254,6 +340,143 @@ async function columnNames(schema: string, table: string) {
   `;
   return rows.map((r: any) => r.name as string);
 }
+
+// ============================================================
+// Campos embutidos (Built-in) e preenchimento automático
+// ============================================================
+
+/** Nome de data type/tabela reservado para a tabela nativa de usuários. */
+const USERS_TABLE = 'users';
+
+function slugifyValue(value: string): string {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+}
+
+/** Escolhe um campo de texto para gerar o Slug automaticamente. */
+function pickSlugSeed(body: Record<string, any>): string {
+  const preferred = ['name', 'nome', 'title', 'titulo', 'label', 'email'];
+  for (const key of preferred) {
+    if (typeof body[key] === 'string' && body[key].trim()) return body[key];
+  }
+  for (const key of Object.keys(body)) {
+    if (
+      ['id', 'created_at', 'updated_at', 'creator', 'slug', 'password', 'password_hash'].includes(key)
+    ) {
+      continue;
+    }
+    if (typeof body[key] === 'string' && body[key].trim()) return body[key];
+  }
+  return '';
+}
+
+async function uniqueSlug(schema: string, table: string, seed: string): Promise<string> {
+  const base = slugifyValue(seed) || 'item';
+  let candidate = base;
+  for (let i = 2; i <= 30; i++) {
+    const [row] = (await sql.unsafe(
+      `SELECT 1 FROM ${qident(schema)}.${qident(table)} WHERE slug = $1 LIMIT 1`,
+      [candidate]
+    )) as any[];
+    if (!row) return candidate;
+    candidate = `${base}-${i}`;
+  }
+  return `${base}-${randomUUID().slice(0, 8)}`;
+}
+
+/**
+ * Normaliza o corpo de um INSERT:
+ * - nunca aceita id/password_hash vindos do cliente;
+ * - na tabela `users`, transforma `password` em hash scrypt;
+ * - preenche `creator` com o usuário do contexto do token;
+ * - gera `slug` automaticamente quando não informado.
+ */
+async function prepareInsert(
+  schema: string,
+  table: string,
+  body: Record<string, any>,
+  cols: string[],
+  contextUserId?: string | null
+): Promise<{ keys: string[]; values: any[]; error?: string }> {
+  const data: Record<string, any> = { ...(body || {}) };
+  delete data.id;
+  delete data.password_hash;
+
+  if (table === USERS_TABLE) {
+    const password = typeof data.password === 'string' ? data.password : '';
+    delete data.password;
+    if (!data.email || !String(data.email).trim()) {
+      return { keys: [], values: [], error: 'O campo email é obrigatório' };
+    }
+    data.email = String(data.email).trim();
+    if (password) {
+      data.password_hash = hashPassword(password);
+    } else {
+      return { keys: [], values: [], error: 'O campo password é obrigatório' };
+    }
+  }
+
+  if (cols.includes('creator') && contextUserId && UUID_RE.test(String(contextUserId))) {
+    data.creator = contextUserId;
+  } else {
+    delete data.creator;
+  }
+
+  if (cols.includes('slug') && !String(data.slug || '').trim()) {
+    const seed = pickSlugSeed(data);
+    if (seed) data.slug = await uniqueSlug(schema, table, seed);
+  }
+
+  const keys = Object.keys(data).filter(
+    (k) =>
+      (cols.includes(k) || k === 'password_hash') &&
+      data[k] !== '' &&
+      data[k] !== null &&
+      data[k] !== undefined
+  );
+  return { keys, values: keys.map((k) => data[k]) };
+}
+
+/**
+ * Normaliza o corpo de um UPDATE:
+ * - id/created_at/creator são imutáveis;
+ * - na tabela `users`, `password` vira password_hash (se informado).
+ */
+function prepareUpdate(
+  table: string,
+  body: Record<string, any>,
+  cols: string[]
+): { keys: string[]; values: any[]; error?: string } {
+  const data: Record<string, any> = { ...(body || {}) };
+  delete data.id;
+  delete data.created_at;
+  delete data.creator;
+  delete data.password_hash;
+
+  if (table === USERS_TABLE) {
+    const password = typeof data.password === 'string' ? data.password : '';
+    delete data.password;
+    if (password) data.password_hash = hashPassword(password);
+    if (data.email !== undefined && !String(data.email).trim()) {
+      return { keys: [], values: [], error: 'O campo email não pode ficar vazio' };
+    }
+    if (data.email !== undefined) data.email = String(data.email).trim();
+  }
+
+  const keys = Object.keys(data).filter(
+    (k) =>
+      (cols.includes(k) || k === 'password_hash') &&
+      data[k] !== undefined &&
+      data[k] !== ''
+  );
+  return { keys, values: keys.map((k) => data[k]) };
+}
+
 
 // Lista os data types (tabelas) do projeto ativo com contagem real de registros
 app.get('/schema', async (request: any) => {
@@ -340,7 +563,7 @@ app.get('/schema/:table/columns', async (request: any, reply) => {
     return { ...c, logical_type: match ? match[1] : null };
   });
 
-  return { columns: withLogical };
+  return { columns: withLogical.filter((c) => !HIDDEN_COLUMNS.has(c.name)) };
 });
 
 // Linhas de um data type (com busca e paginação)
@@ -399,13 +622,13 @@ app.post('/data/:table', async (request: any, reply) => {
   const body = request.body || {};
   const allCols = await columnNames(ctx.schema, table);
   const cols = allCols.filter((n) => !HIDDEN_COLUMNS.has(n));
-  const keys = Object.keys(body).filter(
-    (k) => cols.includes(k) && body[k] !== '' && body[k] !== null && body[k] !== undefined
-  );
+  const prepared = await prepareInsert(ctx.schema, table, body, cols);
+  if (prepared.error) return reply.code(400).send({ error: prepared.error });
+  const keys = prepared.keys;
   if (!keys.length) return reply.code(400).send({ error: 'Nenhum campo válido informado' });
 
   const placeholders = keys.map((_, i) => `$${i + 1}`);
-  const values = keys.map((k) => body[k]);
+  const values = prepared.values;
   const returning = cols.map(qident).join(', ');
 
   try {
@@ -431,11 +654,16 @@ app.patch('/data/:table/:id', async (request: any, reply) => {
   const body = request.body || {};
   const allCols = await columnNames(ctx.schema, table);
   const cols = allCols.filter((n) => !HIDDEN_COLUMNS.has(n) && n !== 'id');
-  const keys = Object.keys(body).filter((k) => cols.includes(k));
+  const prepared = prepareUpdate(table, body, cols);
+  if (prepared.error) return reply.code(400).send({ error: prepared.error });
+  const keys = prepared.keys;
   if (!keys.length) return reply.code(400).send({ error: 'Nenhum campo válido informado' });
 
   const sets = keys.map((k, i) => `${qident(k)} = $${i + 1}`);
-  const values = keys.map((k) => body[k]);
+  if (allCols.includes('updated_at') && !keys.includes('updated_at')) {
+    sets.push(`${qident('updated_at')} = NOW()`);
+  }
+  const values = prepared.values;
   values.push(id);
   const returning = cols.map(qident).join(', ');
 
@@ -484,18 +712,85 @@ app.post('/schema', async (request: any, reply) => {
   if (!/^[a-z_][a-z0-9_]*$/i.test(name || '')) {
     return reply.code(400).send({ error: 'Nome do data type inválido' });
   }
+  if (String(name).toLowerCase() === USERS_TABLE) {
+    return reply.code(409).send({ error: 'O data type User já existe e é nativo do projeto' });
+  }
   if (await tableExists(ctx.schema, name)) {
     return reply.code(409).send({ error: 'Já existe um data type com esse nome' });
   }
 
   try {
+    // Toda tabela nasce com os campos embutidos do Bubble.
     await sql.unsafe(`CREATE TABLE ${qident(ctx.schema)}.${qident(name)} (
       id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
       created_at timestamptz DEFAULT NOW(),
-      updated_at timestamptz DEFAULT NOW()
+      updated_at timestamptz DEFAULT NOW(),
+      creator uuid REFERENCES ${qident(ctx.schema)}.${qident(USERS_TABLE)}(id) ON DELETE SET NULL,
+      slug text
     )`);
     return { ok: true, name };
   } catch (err: any) {
+    return reply.code(400).send({ error: err.message });
+  }
+});
+
+// Excluir um data type (tabela) do projeto
+app.delete('/schema/:table', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+  const { table } = request.params;
+
+  if (!(await tableExists(ctx.schema, table))) {
+    return reply.code(404).send({ error: 'Data type não encontrado' });
+  }
+  if (table === USERS_TABLE) {
+    return reply
+      .code(400)
+      .send({ error: 'O data type User é nativo do projeto e não pode ser excluído' });
+  }
+
+  // Não excluir tabelas que são referenciadas por outras (evita perda de dados).
+  const dependents = (await sql`
+    SELECT src.relname AS source_table
+    FROM pg_constraint c
+    JOIN pg_class src ON src.oid = c.conrelid
+    JOIN pg_namespace sn ON sn.oid = src.relnamespace
+    JOIN pg_class tgt ON tgt.oid = c.confrelid
+    JOIN pg_namespace tn ON tn.oid = tgt.relnamespace
+    WHERE c.contype = 'f'
+      AND tn.nspname = ${ctx.schema}
+      AND tgt.relname = ${table}
+      AND src.relname <> ${table}
+  `) as any[];
+
+  if (dependents.length) {
+    const names = [...new Set(dependents.map((d) => d.source_table))].join(', ');
+    return reply.code(409).send({
+      error: `Este data type é referenciado por: ${names}. Remova os campos de referência antes de excluí-lo.`,
+    });
+  }
+
+  try {
+    await sql.unsafe(`DROP TABLE ${qident(ctx.schema)}.${qident(table)}`);
+
+    // Limpa metadados vinculados ao data type neste projeto.
+    await sql`
+      DELETE FROM livre_auth.rls_rules
+      WHERE project_id = ${ctx.projectId} AND table_name = ${table}
+    `;
+    await sql`
+      DELETE FROM livre_auth.project_api_exposed_tables
+      WHERE project_id = ${ctx.projectId} AND table_name = ${table}
+    `;
+
+    return { ok: true, deleted: table };
+  } catch (err: any) {
+    if (err?.code === '2BP01') {
+      return reply.code(409).send({
+        error:
+          'Este data type é usado por outro objeto (view, chave estrangeira, etc.). Remova a dependência antes.',
+      });
+    }
     return reply.code(400).send({ error: err.message });
   }
 });
@@ -509,9 +804,54 @@ app.post('/schema/:table/columns', async (request: any, reply) => {
     return reply.code(404).send({ error: 'Tabela não encontrada' });
   }
 
-  const { name, type, required, unique } = request.body || {};
+  const { name, type, required, unique, references } = request.body || {};
   if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name || '')) {
     return reply.code(400).send({ error: 'Nome de campo inválido' });
+  }
+  const reserved = table === USERS_TABLE ? USER_BUILTIN_FIELDS : BUILTIN_FIELDS;
+  if (reserved.has(String(name))) {
+    return reply
+      .code(409)
+      .send({ error: 'Este nome é reservado para um campo embutido (Built-in field)' });
+  }
+
+  // Se o usuário escolheu referenciar outra tabela (ex.: campo do tipo "User")
+  const refTable = typeof references === 'string' && references.trim()
+    ? references.trim()
+    : null;
+
+  if (refTable) {
+    // Valida se a tabela referenciada existe no schema do projeto
+    if (!(await tableExists(ctx.schema, refTable))) {
+      return reply.code(400).send({ error: `Tabela "${refTable}" não encontrada` });
+    }
+    if (refTable === table) {
+      return reply.code(400).send({ error: 'Uma tabela não pode referenciar a si mesma' });
+    }
+
+    try {
+      // Cria coluna UUID com FK para a tabela referenciada
+      const ddl = `ALTER TABLE ${qident(ctx.schema)}.${qident(table)}
+        ADD COLUMN ${qident(name)} uuid
+        REFERENCES ${qident(ctx.schema)}.${qident(refTable)}(id) ON DELETE SET NULL`;
+      await sql.unsafe(ddl);
+
+      // Índice para performance em joins
+      await sql.unsafe(
+        `CREATE INDEX IF NOT EXISTS "${table}_${name}_idx"
+         ON ${qident(ctx.schema)}.${qident(table)}(${qident(name)})`
+      );
+
+      // Comentário: guarda o tipo lógico como o nome da tabela referenciada
+      await sql.unsafe(
+        `COMMENT ON COLUMN ${qident(ctx.schema)}.${qident(table)}.${qident(name)}
+         IS 'livre_type:${refTable}'`
+      ).catch(() => {});
+
+      return { ok: true, references: refTable };
+    } catch (err: any) {
+      return reply.code(400).send({ error: err.message });
+    }
   }
 
   const typeMap: Record<string, string> = {
@@ -564,6 +904,13 @@ app.patch('/schema/:table/columns/:column', async (request: any, reply) => {
     return reply.code(404).send({ error: 'Campo não encontrado' });
   }
 
+  const reserved = table === USERS_TABLE ? USER_BUILTIN_FIELDS : BUILTIN_FIELDS;
+  if (reserved.has(column)) {
+    return reply
+      .code(400)
+      .send({ error: 'Campos embutidos (Built-in) não podem ter o tipo alterado' });
+  }
+
   const logical = String(request.body?.logical_type || '').toLowerCase();
   const allowed = ['text', 'number', 'boolean', 'date', 'timestamp', 'json', 'uuid', 'file'];
   if (!allowed.includes(logical)) {
@@ -592,6 +939,13 @@ app.delete('/schema/:table/columns/:column', async (request: any, reply) => {
   const cols = await columnNames(ctx.schema, table);
   if (!cols.includes(column)) {
     return reply.code(404).send({ error: 'Campo não encontrado' });
+  }
+
+  const reserved = table === USERS_TABLE ? USER_BUILTIN_FIELDS : BUILTIN_FIELDS;
+  if (reserved.has(column)) {
+    return reply
+      .code(400)
+      .send({ error: 'Campos embutidos (Built-in) não podem ser removidos' });
   }
 
   // Não permitir remover a chave primária (nem a coluna "id").
@@ -857,6 +1211,105 @@ app.delete('/option-sets/:id/options/:optionId', async (request: any, reply) => 
 });
 
 // ============================================================
+// SQL MIGRATIONS (arquivos .sql executados no schema do projeto)
+// ============================================================
+
+// Histórico de migrations do projeto ativo.
+app.get('/migrations', async (request: any, reply: any) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+  return { migrations: await listMigrations(ctx.projectId) };
+});
+
+// Exporta o schema do projeto como um arquivo .sql (DDL PostgreSQL).
+// Precisa vir antes de /migrations/:id para não ser interpretado como um ID.
+app.get('/migrations/export', async (request: any, reply: any) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+  try {
+    return await exportProjectSchema(ctx);
+  } catch (err: any) {
+    return reply.code(400).send({ error: err.message });
+  }
+});
+
+// Detalhe (inclui o SQL original, para visualizar/baixar).
+app.get('/migrations/:id', async (request: any, reply: any) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+  if (!UUID_RE.test(String(request.params.id))) {
+    return reply.code(400).send({ error: 'ID inválido' });
+  }
+  const migration = await getMigration(ctx.projectId, request.params.id);
+  if (!migration) return reply.code(404).send({ error: 'Migration não encontrada' });
+  return { migration };
+});
+
+// Executa um arquivo SQL (enviado pelo painel como texto).
+app.post('/migrations', async (request: any, reply: any) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+  const { filename, sql: sqlText, force } = request.body || {};
+
+  try {
+    const migration = await executeSqlMigration(ctx, filename, sqlText, {
+      force: force === true,
+    });
+    return { migration };
+  } catch (err: any) {
+    return reply.code(400).send({
+      error: err.message,
+      migrationId: err.migrationId,
+      statements: err.statements,
+      durationMs: err.durationMs,
+    });
+  }
+});
+
+// Reexecuta o SQL de uma migration que falhou.
+app.post('/migrations/:id/retry', async (request: any, reply: any) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+  if (!UUID_RE.test(String(request.params.id))) {
+    return reply.code(400).send({ error: 'ID inválido' });
+  }
+  const migration = await getMigration(ctx.projectId, request.params.id);
+  if (!migration) return reply.code(404).send({ error: 'Migration não encontrada' });
+  if (migration.status === 'success') {
+    return reply.code(409).send({ error: 'Esta migration já foi aplicada com sucesso.' });
+  }
+
+  try {
+    const applied = await executeSqlMigration(
+      ctx,
+      migration.filename,
+      migration.sql_text,
+      { force: true }
+    );
+    return { migration: applied };
+  } catch (err: any) {
+    return reply.code(400).send({
+      error: err.message,
+      migrationId: err.migrationId,
+      statements: err.statements,
+      durationMs: err.durationMs,
+    });
+  }
+});
+
+// Remove apenas o registro do histórico (não desfaz o SQL aplicado).
+app.delete('/migrations/:id', async (request: any, reply: any) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+  if (!UUID_RE.test(String(request.params.id))) {
+    return reply.code(400).send({ error: 'ID inválido' });
+  }
+  const removed = await deleteMigration(ctx.projectId, request.params.id);
+  if (!removed) return reply.code(404).send({ error: 'Migration não encontrada' });
+  return { ok: true };
+});
+
+// ============================================================
 // FILE MANAGER (MinIO + metadados no Postgres)
 // ============================================================
 
@@ -1021,6 +1474,36 @@ app.get('/files/:id/download', async (request: any, reply) => {
   }
 });
 
+// Link público de arquivo (UUID não adivinhável).
+// Usado pelo botão "Copiar link" do File manager e para exibir imagens
+// diretamente em <img src="...">.
+app.get('/public/files/:id', async (request: any, reply) => {
+  const [file] = (await sql`
+    SELECT bucket, object_key, file_name, mime_type
+    FROM livre_auth.files
+    WHERE id::text = ${request.params.id}
+      AND status = 'ready'
+      AND is_private = false
+    LIMIT 1
+  `) as any[];
+  if (!file) return reply.code(404).send({ error: 'Arquivo não encontrado' });
+
+  try {
+    const object = await s3.send(
+      new GetObjectCommand({ Bucket: file.bucket, Key: file.object_key })
+    );
+    reply.header('Content-Type', file.mime_type || 'application/octet-stream');
+    reply.header('Cache-Control', 'public, max-age=31536000, immutable');
+    reply.header(
+      'Content-Disposition',
+      `inline; filename*=UTF-8''${encodeURIComponent(file.file_name)}`
+    );
+    return reply.send(object.Body as any);
+  } catch (err: any) {
+    return reply.code(502).send({ error: `Falha ao ler do storage: ${err.message}` });
+  }
+});
+
 app.delete('/files', async (request: any, reply) => {
   const ctx = await requireProject(request, reply);
   if (!ctx) return;
@@ -1052,6 +1535,31 @@ app.delete('/files', async (request: any, reply) => {
     [idList, ctx.projectId]
   );
   return { deleted: removed.length };
+});
+
+// Alternar visibilidade pública/privada de um arquivo
+app.patch('/files/:id/visibility', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+  const { id } = request.params;
+  if (!id || !UUID_RE.test(id)) {
+    return reply.code(400).send({ error: 'ID de arquivo inválido' });
+  }
+
+  const [current] = await sql`
+    SELECT id, is_private FROM livre_auth.files
+    WHERE id = ${id} AND project_id = ${ctx.projectId}
+  `;
+  if (!current) return reply.code(404).send({ error: 'Arquivo não encontrado' });
+
+  const newValue = !current.is_private;
+  const [file] = await sql`
+    UPDATE livre_auth.files
+    SET is_private = ${newValue}
+    WHERE id = ${id} AND project_id = ${ctx.projectId}
+    RETURNING id, file_name, is_private
+  `;
+  return { file };
 });
 
 // ============================================================
@@ -1435,6 +1943,207 @@ app.delete('/api-tokens/:id', async (request: any, reply) => {
   return { ok: true };
 });
 
+// ---- Autenticação nativa por projeto (/public/auth/:project/...) ----
+// O :project aceita o slug ou a public_key do projeto.
+
+async function getProjectByRef(ref: string) {
+  const clean = String(ref || '').trim();
+  if (!clean) return null;
+  if (UUID_RE.test(clean)) {
+    const [project] = (await sql`
+      SELECT id, name, slug, schema_name, public_key, active
+      FROM livre_auth.projects
+      WHERE id = ${clean} OR public_key = ${clean}
+      LIMIT 1
+    `) as any[];
+    return project || null;
+  }
+  const [project] = (await sql`
+    SELECT id, name, slug, schema_name, public_key, active
+    FROM livre_auth.projects
+    WHERE slug = ${clean}
+    LIMIT 1
+  `) as any[];
+  return project || null;
+}
+
+function publicUser(row: any) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    email: row.email,
+    slug: row.slug,
+    email_confirmed: row.email_confirmed,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+async function projectUserFromRequest(request: any, projectId: string) {
+  const header = request.headers.authorization;
+  if (!header?.startsWith('Bearer ')) return null;
+  try {
+    const payload = await verifyToken(header.slice(7));
+    if (payload.role !== 'project_user' || payload.project_id !== projectId) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+app.post('/public/auth/:project/signup', async (request: any, reply) => {
+  const project = await getProjectByRef(request.params.project);
+  if (!project?.schema_name) return reply.code(404).send({ error: 'Projeto não encontrado' });
+
+  const email = String(request.body?.email || '').trim();
+  const password = String(request.body?.password || '');
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return reply.code(400).send({ error: 'Informe um e-mail válido' });
+  }
+  if (password.length < 6) {
+    return reply.code(400).send({ error: 'A senha deve ter pelo menos 6 caracteres' });
+  }
+
+  try {
+    const schema = qident(project.schema_name);
+    const [existing] = (await sql.unsafe(
+      `SELECT 1 FROM ${schema}."${USERS_TABLE}" WHERE lower(email) = lower($1) LIMIT 1`,
+      [email]
+    )) as any[];
+    if (existing) {
+      return reply.code(409).send({ error: 'Já existe um usuário com este e-mail' });
+    }
+
+    const cols = await columnNames(project.schema_name, USERS_TABLE);
+    const data: Record<string, any> = {
+      email,
+      password_hash: hashPassword(password),
+    };
+
+    // Campos adicionais permitidos (ex.: campos criados pelo usuário no data type User).
+    const extraBlocked = new Set([
+      'id', 'email', 'password', 'password_hash', 'created_at', 'updated_at',
+      'email_confirmed', 'token_version',
+    ]);
+    for (const key of Object.keys(request.body || {})) {
+      if (extraBlocked.has(key)) continue;
+      if (!cols.includes(key)) continue;
+      const value = request.body[key];
+      if (value !== undefined && value !== null && value !== '') data[key] = value;
+    }
+
+    if (!String(data.slug || '').trim()) {
+      data.slug = await uniqueSlug(project.schema_name, USERS_TABLE, email.split('@')[0]);
+    }
+
+    const keys = Object.keys(data).filter(
+      (k) => cols.includes(k) && data[k] !== undefined && data[k] !== ''
+    );
+    const [user] = (await sql.unsafe(
+      `INSERT INTO ${schema}."${USERS_TABLE}" (${keys.map(qident).join(', ')})
+       VALUES (${keys.map((_, i) => `$${i + 1}`).join(', ')})
+       RETURNING id, email, slug, email_confirmed, created_at, updated_at, token_version`,
+      keys.map((k) => data[k])
+    )) as any[];
+
+    const token = await signToken({
+      sub: user.id,
+      email: user.email,
+      project_id: project.id,
+      role: 'project_user',
+      type: 'project_user',
+      v: user.token_version || 0,
+    });
+    return { token, user: publicUser(user) };
+  } catch (err: any) {
+    if (err?.code === '23505') {
+      return reply.code(409).send({ error: 'Já existe um usuário com este e-mail' });
+    }
+    return reply.code(400).send({ error: err.message });
+  }
+});
+
+app.post('/public/auth/:project/login', async (request: any, reply) => {
+  const project = await getProjectByRef(request.params.project);
+  if (!project?.schema_name) return reply.code(404).send({ error: 'Projeto não encontrado' });
+
+  const email = String(request.body?.email || '').trim();
+  const password = String(request.body?.password || '');
+  if (!email || !password) {
+    return reply.code(400).send({ error: 'Informe e-mail e senha' });
+  }
+
+  try {
+    const schema = qident(project.schema_name);
+    const [user] = (await sql.unsafe(
+      `SELECT id, email, password_hash, slug, email_confirmed, created_at, updated_at, token_version
+       FROM ${schema}."${USERS_TABLE}" WHERE lower(email) = lower($1) LIMIT 1`,
+      [email]
+    )) as any[];
+
+    if (!user || !verifyPassword(password, user.password_hash)) {
+      return reply.code(401).send({ error: 'E-mail ou senha incorretos' });
+    }
+
+    const token = await signToken({
+      sub: user.id,
+      email: user.email,
+      project_id: project.id,
+      role: 'project_user',
+      type: 'project_user',
+      v: user.token_version || 0,
+    });
+    return { token, user: publicUser(user) };
+  } catch (err: any) {
+    return reply.code(400).send({ error: err.message });
+  }
+});
+
+app.get('/public/auth/:project/me', async (request: any, reply) => {
+  const project = await getProjectByRef(request.params.project);
+  if (!project?.schema_name) return reply.code(404).send({ error: 'Projeto não encontrado' });
+
+  const payload = await projectUserFromRequest(request, project.id);
+  if (!payload) return reply.code(401).send({ error: 'Token de usuário inválido ou ausente' });
+
+  try {
+    const schema = qident(project.schema_name);
+    const [user] = (await sql.unsafe(
+      `SELECT id, email, slug, email_confirmed, created_at, updated_at, token_version
+       FROM ${schema}."${USERS_TABLE}" WHERE id = $1 LIMIT 1`,
+      [payload.sub]
+    )) as any[];
+    if (!user || (user.token_version || 0) !== (payload.v || 0)) {
+      return reply.code(401).send({ error: 'Sessão expirada. Faça login novamente.' });
+    }
+    return { user: publicUser(user) };
+  } catch (err: any) {
+    return reply.code(400).send({ error: err.message });
+  }
+});
+
+app.post('/public/auth/:project/logout', async (request: any, reply) => {
+  const project = await getProjectByRef(request.params.project);
+  if (!project?.schema_name) return reply.code(404).send({ error: 'Projeto não encontrado' });
+
+  const payload = await projectUserFromRequest(request, project.id);
+  if (!payload) return reply.code(401).send({ error: 'Token de usuário inválido ou ausente' });
+
+  try {
+    const schema = qident(project.schema_name);
+    // Incrementa a versão do token: invalida os tokens emitidos antes do logout.
+    await sql.unsafe(
+      `UPDATE ${schema}."${USERS_TABLE}"
+       SET token_version = token_version + 1, updated_at = NOW()
+       WHERE id = $1`,
+      [payload.sub]
+    );
+    return { ok: true };
+  } catch (err: any) {
+    return reply.code(400).send({ error: err.message });
+  }
+});
+
 // ---- Endpoints públicos (exigem token; sujeitos a RLS) ----
 app.get('/public/_meta', async (request: any, reply) => {
   const tokenRow = await requireApiToken(request, reply);
@@ -1529,9 +2238,15 @@ app.post('/public/:table', async (request: any, reply) => {
   const body = request.body || {};
   const allCols = await columnNames(tokenRow.schema_name, table);
   const cols = allCols.filter((n) => !HIDDEN_COLUMNS.has(n));
-  const keys = Object.keys(body).filter(
-    (k) => cols.includes(k) && body[k] !== '' && body[k] !== null && body[k] !== undefined
+  const prepared = await prepareInsert(
+    tokenRow.schema_name,
+    table,
+    body,
+    cols,
+    tokenRow.context_user_id
   );
+  if (prepared.error) return reply.code(400).send({ error: prepared.error });
+  const keys = prepared.keys;
   if (!keys.length) return reply.code(400).send({ error: 'Nenhum campo válido informado' });
 
   const qualified = `${qident(tokenRow.schema_name)}.${qident(table)}`;
@@ -1541,7 +2256,7 @@ app.post('/public/:table', async (request: any, reply) => {
         `INSERT INTO ${qualified} (${keys.map(qident).join(', ')})
          VALUES (${keys.map((_, i) => `$${i + 1}`).join(', ')})
          RETURNING ${cols.map(qident).join(', ')}`,
-        keys.map((k) => body[k])
+        prepared.values
       )) as any[];
       return r;
     });
@@ -1560,17 +2275,22 @@ app.patch('/public/:table/:id', async (request: any, reply) => {
   const body = request.body || {};
   const allCols = await columnNames(tokenRow.schema_name, table);
   const cols = allCols.filter((n) => !HIDDEN_COLUMNS.has(n) && n !== 'id');
-  const keys = Object.keys(body).filter((k) => cols.includes(k));
+  const prepared = prepareUpdate(table, body, cols);
+  if (prepared.error) return reply.code(400).send({ error: prepared.error });
+  const keys = prepared.keys;
   if (!keys.length) return reply.code(400).send({ error: 'Nenhum campo válido informado' });
 
-  const values = keys.map((k) => body[k]);
+  const values = prepared.values;
   values.push(id);
   const qualified = `${qident(tokenRow.schema_name)}.${qident(table)}`;
+  const updatedAt = allCols.includes('updated_at') && !keys.includes('updated_at')
+    ? `, ${qident('updated_at')} = NOW()`
+    : '';
   try {
     const row = await withRlsContext(tokenRow, async (tx) => {
       const [r] = (await tx.unsafe(
         `UPDATE ${qualified}
-         SET ${keys.map((k, i) => `${qident(k)} = $${i + 1}`).join(', ')}
+         SET ${keys.map((k, i) => `${qident(k)} = $${i + 1}`).join(', ')}${updatedAt}
          WHERE id::text = $${values.length}
          RETURNING ${cols.map(qident).join(', ')}`,
         values

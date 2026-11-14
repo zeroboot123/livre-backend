@@ -4,6 +4,8 @@ import { AuthProvider, useAuth } from '@/lib/auth-context';
 import { Sidebar, Header } from '@/components/layout/sidebar-layout';
 import { usePathname } from 'next/navigation';
 import { useState } from 'react';
+import Image from 'next/image';
+import logo from '@/../public/logo-mark.png';
 import '../styles/globals.css';
 
 // usePathname() returns paths WITHOUT the basePath ('/admin') prefix.
@@ -18,9 +20,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
     return (
       <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center">
         <div className="text-center">
-          <div className="inline-flex items-center justify-center w-12 h-12 bg-[#2563EB] rounded-2xl mb-4">
-            <span className="text-white text-xl font-bold">L</span>
-          </div>
+          <Image src={logo} alt="Livre Backend" className="mx-auto h-16 w-auto" />
           <div className="animate-spin w-6 h-6 border-2 border-[#2563EB] border-t-transparent rounded-full mx-auto mb-3"></div>
           <p className="text-sm text-[#64748B]">Carregando...</p>
         </div>

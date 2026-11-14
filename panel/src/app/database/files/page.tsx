@@ -1,13 +1,15 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Download, File, Trash2, Upload } from 'lucide-react';
+import { Download, File, Link2, Lock, Trash2, Unlock, Upload } from 'lucide-react';
 import { DataShell } from '@/components/data/data-shell';
 import { Toast, type ToastKind } from '@/components/ui/Toast';
 import {
   deleteFiles,
   downloadFile,
   fetchFiles,
+  publicFileUrl,
+  toggleFileVisibility,
   uploadFile,
   type StoredFile,
 } from '@/lib/data-api';
@@ -131,6 +133,45 @@ function FileManagerInner() {
       await downloadFile(file.id, file.file_name);
     } catch (err: any) {
       notify(err?.message || 'Erro ao baixar o arquivo', 'error');
+    }
+  };
+
+  const handleCopyLink = async (file: StoredFile) => {
+    const url = publicFileUrl(file.id);
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(url);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = url;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        textarea.remove();
+      }
+      notify('Link copiado para a área de transferência');
+    } catch {
+      notify('Não foi possível copiar o link', 'error');
+    }
+  };
+
+  const handleToggleVisibility = async (file: StoredFile) => {
+    try {
+      const result = await toggleFileVisibility(file.id);
+      setFiles((prev) =>
+        prev.map((f) =>
+          f.id === file.id ? { ...f, is_private: result.is_private } : f
+        )
+      );
+      notify(
+        result.is_private
+          ? 'Arquivo alterado para privado'
+          : 'Arquivo alterado para público'
+      );
+    } catch (err: any) {
+      notify(err?.message || 'Erro ao alterar visibilidade', 'error');
     }
   };
 
@@ -260,6 +301,7 @@ function FileManagerInner() {
                 <th className="w-24 px-2 py-1.5 font-semibold">Size</th>
                 <th className="w-40 px-2 py-1.5 font-semibold">Type</th>
                 <th className="w-40 px-2 py-1.5 font-semibold">Upload date</th>
+                <th className="w-20 px-2 py-1.5 font-semibold">Visibility</th>
                 <th className="w-28 px-2 py-1.5 font-semibold">User ID</th>
                 <th className="w-28 px-2 py-1.5 font-semibold">Attached to</th>
                 <th className="w-20 px-2 py-1.5 font-semibold">Actions</th>
@@ -294,6 +336,39 @@ function FileManagerInner() {
                   <td className="px-2 py-1.5 text-slate-600">
                     {new Date(file.created_at).toLocaleString('pt-BR')}
                   </td>
+                  <td className="px-2 py-1.5">
+                    <div className="flex items-center gap-1">
+                      <span
+                        className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                          file.is_private
+                            ? 'bg-amber-50 text-amber-700'
+                            : 'bg-green-50 text-green-700'
+                        }`}
+                      >
+                        {file.is_private ? (
+                          <Lock className="h-2.5 w-2.5" />
+                        ) : (
+                          <Unlock className="h-2.5 w-2.5" />
+                        )}
+                        {file.is_private ? 'Private' : 'Public'}
+                      </span>
+                      <button
+                        onClick={() => handleToggleVisibility(file)}
+                        title={
+                          file.is_private
+                            ? 'Tornar público'
+                            : 'Tornar privado'
+                        }
+                        className="rounded p-0.5 text-slate-400 hover:bg-slate-200 hover:text-slate-700"
+                      >
+                        {file.is_private ? (
+                          <Unlock className="h-3 w-3" />
+                        ) : (
+                          <Lock className="h-3 w-3" />
+                        )}
+                      </button>
+                    </div>
+                  </td>
                   <td className="px-2 py-1.5 text-slate-400">
                     {file.uploaded_by ? file.uploaded_by.slice(0, 8) : '—'}
                   </td>
@@ -302,6 +377,14 @@ function FileManagerInner() {
                   </td>
                   <td className="px-2 py-1.5">
                     <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => handleCopyLink(file)}
+                        title="Copiar link do arquivo"
+                        aria-label={`Copiar link de ${file.file_name}`}
+                        className="rounded p-1 text-slate-400 hover:bg-blue-50 hover:text-blue-600"
+                      >
+                        <Link2 className="h-3.5 w-3.5" />
+                      </button>
                       <button
                         onClick={() => handleDownload(file)}
                         title="Baixar arquivo"
@@ -315,7 +398,7 @@ function FileManagerInner() {
               ))}
               {!loading && !files.length && (
                 <tr>
-                  <td colSpan={8} className="px-2 py-10 text-center">
+                  <td colSpan={9} className="px-2 py-10 text-center">
                     <Upload className="mx-auto mb-2 h-5 w-5 text-slate-300" />
                     <p className="text-[11px] text-slate-400">
                       {search || privateOnly || typeFilter !== 'all'

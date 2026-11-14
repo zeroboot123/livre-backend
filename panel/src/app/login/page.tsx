@@ -1,8 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import Link from 'next/link';
+import Image from 'next/image';
+import logo from '@/../public/logo-mark.png';
+
+const AUTH_URL =
+  process.env.NEXT_PUBLIC_AUTH_URL || 'https://livrebackend.gerbox.com.br/auth';
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -11,6 +16,14 @@ export default function LoginPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [needsSetup, setNeedsSetup] = useState(false);
+
+  useEffect(() => {
+    fetch(`${AUTH_URL}/setup/status`)
+      .then((res) => res.json())
+      .then((data) => setNeedsSetup(!!data?.needsSetup))
+      .catch(() => {});
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -30,9 +43,7 @@ export default function LoginPage() {
       <div className="w-full max-w-sm">
         {/* Logo & Title */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-12 h-12 bg-[#2563EB] rounded-2xl mb-4">
-            <span className="text-white text-xl font-bold">L</span>
-          </div>
+          <Image src={logo} alt="Livre Backend" className="mx-auto mb-4 h-24 w-auto" />
           <h1 className="text-2xl font-bold text-[#0F172A]">Bem-vindo ao Livre Backend</h1>
           <p className="text-sm text-[#64748B] mt-1">Acesse sua plataforma de gerenciamento</p>
         </div>
@@ -126,10 +137,16 @@ export default function LoginPage() {
         </div>
 
         <p className="text-center text-sm text-[#94A3B8] mt-6">
-          Não tem conta?{' '}
-          <Link href="/register" className="text-[#2563EB] hover:text-[#1E40AF] font-medium">
-            Cadastre-se
-          </Link>
+          {needsSetup ? (
+            <>
+              Primeiro acesso?{' '}
+              <Link href="/register" className="text-[#2563EB] hover:text-[#1E40AF] font-medium">
+                Criar administrador
+              </Link>
+            </>
+          ) : (
+            <>Livre Backend &copy; {new Date().getFullYear()}</>
+          )}
         </p>
       </div>
     </div>

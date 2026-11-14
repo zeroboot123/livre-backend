@@ -10,6 +10,7 @@ import {
   columnTypeLabel,
   defaultLabel,
   deleteColumn,
+  deleteTable,
   fetchColumns,
   fieldTypeLabel,
   setColumnLogicalType,
@@ -26,6 +27,14 @@ const typeBadge: Record<string, string> = {
   File: 'bg-orange-50 text-orange-700',
 };
 
+// Campos embutidos do Bubble (não podem ser removidos nem ter o tipo alterado).
+const BUILTIN_FIELDS = new Set(['id', 'created_at', 'updated_at', 'creator', 'slug']);
+const USER_BUILTIN_FIELDS = new Set(['email', 'password_hash']);
+
+function isBuiltinField(table: string, name: string) {
+  return BUILTIN_FIELDS.has(name) || (table === 'users' && USER_BUILTIN_FIELDS.has(name));
+}
+
 function descKey(table: string, field: string) {
   return `livre_field_desc:${table}:${field}`;
 }
@@ -34,7 +43,7 @@ function accessKey(table: string, field: string) {
 }
 
 function DataTypesInner() {
-  const { selected, reloadTables } = useData();
+  const { selected, setSelected, reloadTables, tables } = useData();
   const [columns, setColumns] = useState<DataColumn[]>([]);
   const [loading, setLoading] = useState(false);
   const [activeField, setActiveField] = useState<string>('');
@@ -48,6 +57,7 @@ function DataTypesInner() {
   const [addOpen, setAddOpen] = useState(false);
   const [newName, setNewName] = useState('');
   const [newType, setNewType] = useState('text');
+  const [newReference, setNewReference] = useState('');
   const [newRequired, setNewRequired] = useState(false);
   const [newUnique, setNewUnique] = useState(false);
   const [addError, setAddError] = useState('');
@@ -92,6 +102,7 @@ function DataTypesInner() {
     () => columns.find((c) => c.name === activeField) || null,
     [columns, activeField]
   );
+  const activeBuiltin = !!active && isBuiltinField(selected, active.name);
 
   const saveDescription = (value: string) => {
     setDescription(value);
@@ -108,16 +119,19 @@ function DataTypesInner() {
     setAddError('');
     setSaving(true);
     try {
+      const ref = newReference?.trim() || undefined;
       await addColumn(selected, {
         name: newName.trim(),
-        type: newType,
+        type: ref ? 'uuid' : newType,
         required: newRequired,
         unique: newUnique,
+        references: ref,
       });
       notify('Campo criado com sucesso');
       setAddOpen(false);
       setNewName('');
       setNewType('text');
+      setNewReference('');
       setNewRequired(false);
       setNewUnique(false);
       load();
@@ -144,6 +158,10 @@ function DataTypesInner() {
   };
 
   const handleDeleteField = async (col: DataColumn) => {    if (!selected) return;
+    if (isBuiltinField(selected, col.name)) {
+      notify('Campos embutidos (Built-in) não podem ser removidos', 'error');
+      return;
+    }
     if (col.primary || col.name === 'id') {
       notify('Não é possível remover a chave primária', 'error');
       return;
@@ -169,6 +187,33 @@ function DataTypesInner() {
     }
   };
 
+  const handleDeleteType = async () => {
+    if (!selected) return;
+    if (selected === 'users') {
+      notify('O data type User é nativo do projeto e não pode ser excluído', 'error');
+      return;
+    }
+    if (
+      !window.confirm(
+        `Excluir o data type "${selected}"?\n\nTodos os registros e campos dessa tabela serão perdidos permanentemente.`
+      )
+    ) {
+      return;
+    }
+    setSaving(true);
+    try {
+      await deleteTable(selected);
+      notify(`Data type "${selected}" excluído`);
+      const list = (await reloadTables()) as { name: string }[];
+      const next = list.find((t) => t.name !== selected)?.name || '';
+      setSelected(next);
+    } catch (err: any) {
+      notify(err?.message || 'Erro ao excluir data type', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="flex h-full flex-col bg-[#F7F8FA]">
       <div className="shrink-0 bg-white px-4 pb-2 pt-3">
@@ -176,7 +221,19 @@ function DataTypesInner() {
           <h1 className="text-[13px] text-slate-700">
             Fields for type <span className="font-semibold text-slate-900">{selected || '…'}</span>
           </h1>
-          <span className="text-[11px] text-slate-400">Show deleted fields</span>
+          <button
+            onClick={handleDeleteType}
+            disabled={!selected || selected === 'users' || saving}
+            title={
+              selected === 'users'
+                ? 'O data type User é nativo do projeto'
+                : 'Excluir este data type'
+            }
+            className="inline-flex items-center gap-1.5 rounded border border-red-200 bg-white px-2.5 py-1.5 text-[11px] font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Delete data type
+          </button>
         </div>
       </div>
 
@@ -241,6 +298,9 @@ function DataTypesInner() {
                   columns.map((col, index) => {
                     const label = columnTypeLabel(col);
                     const isActive = col.name === activeField;
+                    const builtin = isBuiltinField(selected, col.name);
+                    const isRef = col.references && !builtin;
+                    const refName = isRef ? col.references!.split('.').pop() || col.references! : null;
                     return (
                       <tr
                         key={col.name}
@@ -258,9 +318,20 @@ function DataTypesInner() {
                                 PK
                               </span>
                             )}
+                            {builtin && (
+                              <span className="inline-flex rounded bg-violet-50 px-1.5 py-0.5 text-[9px] font-medium text-violet-700">
+                                Built-in field
+                              </span>
+                            )}
                           </div>
                         </td>
                         <td className="px-3 py-2">
+                          {isRef ? (
+                            <span className="inline-flex items-center gap-0.5 rounded bg-purple-50 px-1.5 py-0.5 text-[10px] font-medium text-purple-700">
+                              <Link2 className="h-2.5 w-2.5" />
+                              {refName}
+                            </span>
+                          ) : (
                           <span
                             className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium ${
                               typeBadge[label] || 'bg-slate-100 text-slate-600'
@@ -268,6 +339,7 @@ function DataTypesInner() {
                           >
                             {label}
                           </span>
+                          )}
                         </td>
                         <td className="px-3 py-2 text-[11px] text-slate-500">{defaultLabel(col.default_value)}</td>
                         <td className="px-3 py-2">
@@ -302,10 +374,10 @@ function DataTypesInner() {
                                 e.stopPropagation();
                                 handleDeleteField(col);
                               }}
-                              disabled={col.primary || col.name === 'id' || saving}
+                              disabled={builtin || saving}
                               title={
-                                col.primary || col.name === 'id'
-                                  ? 'A chave primária não pode ser removida'
+                                builtin
+                                  ? 'Campo embutido (Built-in) não pode ser removido'
                                   : 'Remover campo'
                               }
                               className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-30"
@@ -346,6 +418,12 @@ function DataTypesInner() {
               <div>
                 <label className="mb-1 block text-[11px] font-medium text-slate-500">Tipo</label>
                 <div className="flex items-center gap-2">
+                  {active.references ? (
+                    <span className="inline-flex items-center gap-1 rounded bg-purple-50 px-2 py-1 text-[11px] font-medium text-purple-700">
+                      <Link2 className="h-3 w-3" />
+                      {active.references.split('.').pop() || active.references}
+                    </span>
+                  ) : (
                   <span
                     className={`inline-flex rounded px-2 py-1 text-[11px] font-medium ${
                       typeBadge[columnTypeLabel(active)] || 'bg-slate-100 text-slate-600'
@@ -353,6 +431,7 @@ function DataTypesInner() {
                   >
                     {columnTypeLabel(active)}
                   </span>
+                  )}
                   <span className="text-[10px] text-slate-400">{active.type}</span>
                 </div>
               </div>
@@ -364,7 +443,7 @@ function DataTypesInner() {
                 <select
                   value={(active.logical_type || fieldTypeLabel(active.type)).toLowerCase()}
                   onChange={(e) => handleLogicalTypeChange(e.target.value)}
-                  disabled={saving}
+                  disabled={saving || activeBuiltin}
                   className="w-full rounded border border-slate-200 px-2.5 py-1.5 text-xs text-slate-700 focus:border-blue-500 focus:outline-none disabled:opacity-50"
                 >
                   <option value="text">Text</option>
@@ -376,7 +455,9 @@ function DataTypesInner() {
                   <option value="file">File</option>
                 </select>
                 <p className="mt-1 text-[10px] text-slate-400">
-                  Define como o campo aparece. “File” é armazenado como texto (URL/chave).
+                  {activeBuiltin
+                    ? 'Campo embutido (Built-in field). O tipo é definido automaticamente.'
+                    : 'Define como o campo aparece. “File” é armazenado como texto (URL/chave).'}
                 </p>
               </div>
 
@@ -452,27 +533,57 @@ function DataTypesInner() {
             <input
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
-              placeholder="ex: email"
+              placeholder="ex: cliente"
               className="w-full rounded border border-slate-200 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
             />
           </div>
+
+          {/* Tipo: padrão ou referência a outra tabela */}
           <div>
             <label className="mb-1 block text-xs font-medium text-slate-700">Tipo</label>
             <select
-              value={newType}
-              onChange={(e) => setNewType(e.target.value)}
+              value={newType === 'reference' ? `ref:${newReference}` : newType}
+              onChange={(e) => {
+                const val = e.target.value;
+                if (val.startsWith('ref:')) {
+                  setNewType('reference');
+                  setNewReference(val.slice(4));
+                } else {
+                  setNewType(val);
+                  setNewReference('');
+                }
+              }}
               className="w-full rounded border border-slate-200 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
             >
-              <option value="text">Text</option>
-              <option value="number">Number</option>
-              <option value="boolean">Boolean</option>
-              <option value="date">Date</option>
-              <option value="timestamp">Timestamp</option>
-              <option value="json">JSON</option>
-              <option value="uuid">UUID</option>
-              <option value="file">File</option>
+              <optgroup label="Tipos primitivos">
+                <option value="text">Text</option>
+                <option value="number">Number</option>
+                <option value="boolean">Boolean</option>
+                <option value="date">Date</option>
+                <option value="timestamp">Timestamp</option>
+                <option value="json">JSON</option>
+                <option value="uuid">UUID</option>
+                <option value="file">File</option>
+              </optgroup>
+              {tables.filter((t) => t.name !== selected).length > 0 && (
+                <optgroup label="Referência a outra tabela">
+                  {tables
+                    .filter((t) => t.name !== selected)
+                    .map((t) => (
+                      <option key={t.name} value={`ref:${t.name}`}>
+                        {t.name}
+                      </option>
+                    ))}
+                </optgroup>
+              )}
             </select>
+            {newType === 'reference' && (
+              <p className="mt-1 text-[10px] text-slate-400">
+                Cria um campo UUID com chave estrangeira para a tabela <b>{newReference}</b>.
+              </p>
+            )}
           </div>
+
           <div className="flex gap-4">
             <label className="flex items-center gap-1.5 text-xs text-slate-700">
               <input
@@ -507,7 +618,7 @@ function DataTypesInner() {
             </button>
             <button
               onClick={handleAddField}
-              disabled={saving || !newName.trim()}
+              disabled={saving || !newName.trim() || (newType === 'reference' && !newReference)}
               className="rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
             >
               {saving ? 'Criando...' : 'Criar campo'}

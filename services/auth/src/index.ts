@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
+import { ZodError } from 'zod';
 import { config } from './config/index.js';
 import { testConnection } from './db/pool.js';
 import { authRoutes } from './routes/auth.js';
@@ -20,6 +21,22 @@ await app.register(cors, {
 await app.register(rateLimit, {
   max: 60,
   timeWindow: '1 minute',
+});
+
+// Erros de validação/negócio com status HTTP adequado.
+app.setErrorHandler((error, request, reply) => {
+  if (error instanceof ZodError) {
+    return reply
+      .code(400)
+      .send({ error: error.errors[0]?.message || 'Dados inválidos' });
+  }
+  const err = error as any;
+  const statusCode = err.statusCode;
+  if (typeof statusCode === 'number' && statusCode >= 400 && statusCode < 600) {
+    return reply.code(statusCode).send({ error: err.message });
+  }
+  request.log.error(error as any);
+  return reply.code(500).send({ error: err.message || 'Erro interno' });
 });
 
 // Rotas

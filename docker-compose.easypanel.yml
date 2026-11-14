@@ -6,7 +6,7 @@ services:
       - easypanel
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - /home/adminvps/livre-backend/docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     environment:
       POSTGRES_USER: livre_admin
       POSTGRES_PASSWORD: ${DB_SUPERPASS}
@@ -38,11 +38,6 @@ services:
       resources:
         limits:
           memory: 256M
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
 
   postgrest:
     image: postgrest/postgrest:latest
@@ -56,7 +51,7 @@ services:
       PGRST_DB_URI: postgres://livre_admin:${DB_SUPERPASS}@postgres:5432/livre_backend
       PGRST_DB_SCHEMA: public
       PGRST_DB_ANON_ROLE: anon
-      PGRST_OPENAPI_SERVER_PROXY_URI: https://livrebackend.gerbox.com.br/api/rest
+      PGRST_OPENAPI_SERVER_PROXY_URI: ${PUBLIC_URL}/api/rest
       PGRST_JWT_SECRET: ${JWT_SECRET}
     deploy:
       resources:
@@ -65,7 +60,7 @@ services:
 
   auth-service:
     build:
-      context: /home/adminvps/livre-backend/services/auth
+      context: ./services/auth
       dockerfile: Dockerfile
     restart: unless-stopped
     networks:
@@ -90,7 +85,7 @@ services:
 
   admin-api:
     build:
-      context: /home/adminvps/livre-backend/services/admin-api
+      context: ./services/admin-api
       dockerfile: Dockerfile
     restart: unless-stopped
     networks:
@@ -107,10 +102,11 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       MINIO_ENDPOINT: http://minio:9000
       MINIO_REGION: us-east-1
-      MINIO_BUCKET: livre-files
+      MINIO_BUCKET: ${MINIO_BUCKET:-livre-files}
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       MAX_UPLOAD_MB: 25
+      API_BASE_PATH: /admin/api
     deploy:
       resources:
         limits:
@@ -118,7 +114,7 @@ services:
 
   visual-db:
     build:
-      context: /home/adminvps/livre-backend/services/visual-db
+      context: ./services/visual-db
       dockerfile: Dockerfile
     restart: unless-stopped
     networks:
@@ -139,7 +135,7 @@ services:
 
   admin-panel:
     build:
-      context: /home/adminvps/livre-backend/panel
+      context: ./panel
       dockerfile: Dockerfile
     restart: unless-stopped
     networks:
@@ -149,9 +145,9 @@ services:
       - admin-api
       - visual-db
     environment:
-      NEXT_PUBLIC_API_URL: https://livrebackend.gerbox.com.br/admin/api
-      NEXT_PUBLIC_AUTH_URL: https://livrebackend.gerbox.com.br/auth
-      NEXT_PUBLIC_VISUAL_DB_URL: https://livrebackend.gerbox.com.br/admin/visual-db
+      NEXT_PUBLIC_API_URL: ${PUBLIC_URL}/admin/api
+      NEXT_PUBLIC_AUTH_URL: ${PUBLIC_URL}/auth
+      NEXT_PUBLIC_VISUAL_DB_URL: ${PUBLIC_URL}/admin/visual-db
     deploy:
       resources:
         limits:

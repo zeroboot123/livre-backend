@@ -15,31 +15,124 @@ interface LoginInput {
   password: string;
 }
 
-// Registro de novo usuário
+// Status de instalação: true enquanto não existir nenhum usuário.
+export async function getSetupStatus() {
+  const [row] = await sql`SELECT COUNT(*)::int AS count FROM livre_auth.users`;
+  return { needsSetup: row.count === 0 };
+}
+
+// Registro do primeiro administrador (somente na primeira instalação).
 export async function register(input: RegisterInput) {
   const passwordHash = await hashPassword(input.password);
 
-  const [user] = await sql`
-    INSERT INTO livre_auth.users (email, password_hash, name)
-    VALUES (${input.email}, ${passwordHash}, ${input.name})
-    RETURNING id, email, name, created_at
-  `;
+  const result = await sql.begin(async (tx) => {
+    // Serializa tentativas concorrentes de setup.
+    await tx`SELECT pg_advisory_xact_lock(741852963)`;
+
+    const [row] = await tx`SELECT COUNT(*)::int AS count FROM livre_auth.users`;
+    if (row.count > 0) return { blocked: true as const };
+
+    const [user] = await tx`
+      INSERT INTO livre_auth.users (email, password_hash, name, role)
+      VALUES (${input.email}, ${passwordHash}, ${input.name}, 'admin')
+      RETURNING id, email, name, role, created_at
+    `;
+    return { user };
+  });
+
+  if ('blocked' in result) {
+    const err: any = new Error(
+      'Cadastro público desativado. Crie novos usuários pelo painel.'
+    );
+    err.statusCode = 403;
+    throw err;
+  }
 
   return {
-    user: {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      created_at: user.created_at,
-    },
-    message: 'Usuário registrado com sucesso. Verifique seu email para confirmar.',
+    user: result.user,
+    message: 'Administrador criado com sucesso.',
   };
+}
+
+// Criação de usuários do sistema pelo painel (após o setup inicial).
+export async function createUser(input: RegisterInput & { role?: string }) {
+  const passwordHash = await hashPassword(input.password);
+  const role = input.role === 'admin' ? 'admin' : 'user';
+
+  const [user] = await sql`
+    INSERT INTO livre_auth.users (email, password_hash, name, role)
+    VALUES (${input.email}, ${passwordHash}, ${input.name}, ${role})
+    RETURNING id, email, name, role, created_at
+  `;
+
+  return { user, message: 'Usuário criado com sucesso.' };
+}
+
+// Alteração da própria senha (exige a senha atual).
+export async function changePassword(
+  userId: string,
+  currentPassword: string,
+  newPassword: string
+) {
+  const [user] = await sql`
+    SELECT id, password_hash FROM livre_auth.users WHERE id = ${userId}
+  `;
+  if (!user) {
+    const err: any = new Error('Usuário não encontrado');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const valid = await verifyPassword(currentPassword, user.password_hash);
+  if (!valid) {
+    const err: any = new Error('Senha atual incorreta');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const passwordHash = await hashPassword(newPassword);
+  await sql.begin(async (tx) => {
+    await tx`
+      UPDATE livre_auth.users
+      SET password_hash = ${passwordHash}, updated_at = NOW()
+      WHERE id = ${userId}
+    `;
+    // Revoga sessões existentes por segurança.
+    await tx`
+      UPDATE livre_auth.sessions SET revoked = TRUE WHERE user_id = ${userId}
+    `;
+  });
+
+  return { message: 'Senha alterada com sucesso.' };
+}
+
+// Redefinição de senha de outro usuário pelo painel.
+export async function setUserPassword(userId: string, newPassword: string) {
+  const passwordHash = await hashPassword(newPassword);
+
+  const [user] = await sql`
+    UPDATE livre_auth.users
+    SET password_hash = ${passwordHash}, updated_at = NOW()
+    WHERE id = ${userId}
+    RETURNING id, email, name
+  `;
+  if (!user) {
+    const err: any = new Error('Usuário não encontrado');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  await sql`
+    UPDATE livre_auth.sessions SET revoked = TRUE WHERE user_id = ${userId}
+  `;
+
+  return { user, message: 'Senha atualizada com sucesso.' };
 }
 
 // Login
 export async function login(input: LoginInput) {
   const [user] = await sql`
-    SELECT id, email, password_hash, name, active, blocked
+    SELECT id, email, password_hash, name, active, blocked, role
     FROM livre_auth.users
     WHERE email = ${input.email}
   `;
@@ -65,7 +158,7 @@ export async function login(input: LoginInput) {
   const accessToken = await generateAccessToken({
     sub: user.id,
     email: user.email,
-    role: 'user',
+    role: user.role || 'user',
   });
 
   const refreshToken = await generateRefreshToken();
@@ -86,6 +179,7 @@ export async function login(input: LoginInput) {
       id: user.id,
       email: user.email,
       name: user.name,
+      role: user.role || 'user',
     },
   };
 }

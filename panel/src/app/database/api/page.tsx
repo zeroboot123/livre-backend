@@ -13,6 +13,8 @@ import {
 import { DataShell, useData } from '@/components/data/data-shell';
 import { Modal } from '@/components/ui/Modal';
 import { Toast, type ToastKind } from '@/components/ui/Toast';
+import { apiFetch } from '@/lib/api-client';
+import { getActiveProjectId } from '@/lib/projects';
 import {
   createApiToken,
   fetchApiSettings,
@@ -39,6 +41,7 @@ function ApiInner() {
   const [tokenOpen, setTokenOpen] = useState(false);
   const [tokenName, setTokenName] = useState('');
   const [newToken, setNewToken] = useState<string | null>(null);
+  const [projectRef, setProjectRef] = useState('');
 
   const [toast, setToast] = useState<{ message: string | null; kind: ToastKind }>({
     message: null,
@@ -64,6 +67,20 @@ function ApiInner() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Referência do projeto ativo (slug) para exibir os endpoints de autenticação.
+  useEffect(() => {
+    (async () => {
+      try {
+        const data = await apiFetch('/projects');
+        const id = getActiveProjectId();
+        const project = (data.projects || []).find((p: any) => p.id === id);
+        if (project?.slug) setProjectRef(project.slug);
+      } catch {
+        /* ignore */
+      }
+    })();
   }, []);
 
   const patch = async (values: Partial<ApiSettings>) => {
@@ -136,6 +153,13 @@ function ApiInner() {
 
   const base = publicApiBase();
   const workflowUrl = `${base}/wf`;
+  const authBase = `${base}/auth/${projectRef || ':project'}`;
+  const authEndpoints = [
+    { method: 'POST', path: `${authBase}/signup`, desc: 'Cria um usuário na tabela User nativa' },
+    { method: 'POST', path: `${authBase}/login`, desc: 'Autentica e devolve um token JWT' },
+    { method: 'GET', path: `${authBase}/me`, desc: 'Retorna o usuário do token (Bearer)' },
+    { method: 'POST', path: `${authBase}/logout`, desc: 'Revoga os tokens do usuário' },
+  ];
 
   return (
     <div className="flex h-full flex-col bg-[#F7F8FA]">
@@ -316,6 +340,64 @@ function ApiInner() {
               </div>
             </div>
           )}
+
+          <hr className="border-slate-200" />
+
+          {/* Autenticação nativa do projeto */}
+          <div>
+            <h2 className="mb-1 text-[15px] font-semibold text-slate-800">Authentication API</h2>
+            <p className="mb-3 text-[11px] text-slate-500">
+              Todo projeto nasce com a tabela nativa <b>User</b> (email, senha oculta, Slug, Created
+              Date e Modified Date). Use os endpoints abaixo para cadastrar e autenticar usuários
+              desse projeto.
+            </p>
+            <div className="space-y-1.5">
+              {authEndpoints.map((endpoint) => (
+                <div
+                  key={endpoint.path + endpoint.method}
+                  className="flex items-center gap-2 rounded border border-slate-200 bg-white px-2.5 py-1.5"
+                >
+                  <span className="w-12 shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-center text-[10px] font-semibold text-slate-600">
+                    {endpoint.method}
+                  </span>
+                  <code className="flex-1 truncate text-[11px] text-slate-700">{endpoint.path}</code>
+                  <span className="hidden shrink-0 text-[10px] text-slate-400 sm:block">
+                    {endpoint.desc}
+                  </span>
+                  <button
+                    onClick={() => copy(endpoint.path)}
+                    title="Copiar endpoint"
+                    className="shrink-0 text-slate-400 hover:text-slate-700"
+                  >
+                    {copied === endpoint.path ? (
+                      <Check className="h-3.5 w-3.5 text-green-600" />
+                    ) : (
+                      <Copy className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-2 rounded border border-slate-200 bg-slate-50 px-3 py-2">
+              <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                Exemplo de login
+              </p>
+              <pre className="overflow-x-auto text-[11px] leading-relaxed text-slate-700">{`POST ${authBase}/login
+Content-Type: application/json
+
+{
+  "email": "usuario@exemplo.com",
+  "password": "sua-senha"
+}`}</pre>
+            </div>
+            <p className="mt-2 text-[11px] text-slate-500">
+              O retorno inclui <code className="rounded bg-slate-100 px-1">token</code>. Envie-o como{' '}
+              <code className="rounded bg-slate-100 px-1">Authorization: Bearer &lt;token&gt;</code>{' '}
+              em <code className="rounded bg-slate-100 px-1">/me</code> ou{' '}
+              <code className="rounded bg-slate-100 px-1">/logout</code>.
+            </p>
+          </div>
 
           <hr className="border-slate-200" />
 

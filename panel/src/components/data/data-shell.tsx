@@ -14,6 +14,7 @@ import {
   ChevronDown,
   Code2,
   Eye,
+  FileCode2,
   FolderOpen,
   ListTree,
   Pencil,
@@ -28,6 +29,7 @@ import { apiFetch } from '@/lib/api-client';
 import {
   getActiveProjectId,
   setActiveProjectId as persistActiveProjectId,
+  setActiveProjectName,
   type Project,
 } from '@/lib/projects';
 import { Modal } from '@/components/ui/Modal';
@@ -68,6 +70,7 @@ const tabs = [
   { label: 'API', href: '/database/api', icon: Code2 },
   { label: 'Option sets', href: '/database/optionsets', icon: ListTree },
   { label: 'File manager', href: '/database/files', icon: FolderOpen },
+  { label: 'SQL', href: '/database/sql', icon: FileCode2 },
 ];
 
 function readInitialTable(list: DataTable[]): string {
@@ -136,6 +139,7 @@ export function DataShell({
       const stored = getActiveProjectId();
       const active = list.find((p) => p.id === stored) || list[0] || null;
       persistActiveProjectId(active?.id ?? null);
+      setActiveProjectName(active?.name ?? null);
       setActiveId(active?.id ?? null);
       setProjectsLoaded(true);
 
@@ -150,8 +154,10 @@ export function DataShell({
     }
   }, [reloadTables]);
 
-  const applyProject = async (id: string) => {
+  const applyProject = async (id: string, name?: string) => {
+    const project = projects.find((p) => p.id === id);
     persistActiveProjectId(id);
+    setActiveProjectName(name ?? project?.name ?? null);
     setActiveId(id);
     setProjectMenuOpen(false);
     setSelectedState('');
@@ -180,7 +186,7 @@ export function DataShell({
       setProjects((prev) => [project, ...prev]);
       setProjectModalOpen(false);
       setProjectName('');
-      await applyProject(project.id);
+      await applyProject(project.id, project.name);
     } catch (err: any) {
       setProjectError(err?.message || 'Erro ao criar projeto');
     } finally {
@@ -533,7 +539,8 @@ export function DataShell({
                 className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/15"
               />
               <p className="mt-1 text-[11px] text-slate-400">
-                Será criada uma tabela com id, created_at e updated_at.
+                Será criada uma tabela com os campos embutidos Creator, Created Date, Modified Date e
+                Slug.
               </p>
             </div>
 

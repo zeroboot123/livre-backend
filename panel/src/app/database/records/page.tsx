@@ -32,7 +32,17 @@ import {
 
 const LIMIT = 50;
 
-const HIDDEN_COLUMNS = new Set(['password_hash', 'refresh_token', 'refresh_token_hash', 'email_token']);
+const HIDDEN_COLUMNS = new Set([
+  'password_hash',
+  'email_confirmed',
+  'token_version',
+  'refresh_token',
+  'refresh_token_hash',
+  'email_token',
+]);
+
+// Campos embutidos (Built-in) não aparecem no formulário: são preenchidos automaticamente.
+const BUILTIN_FIELDS = new Set(['id', 'created_at', 'updated_at', 'creator', 'slug']);
 
 const toolbarBtn =
   'inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40';
@@ -174,13 +184,29 @@ function AppDataInner() {
     setSelectedIds([]);
   }, [selected, offset, search, filterColumn]);
 
+  const isUsersTable = selected === 'users';
+
   const editableColumns = useMemo(
-    () => columns.filter((c) => !HIDDEN_COLUMNS.has(c.name) && !(c.primary && c.default_value)),
+    () =>
+      columns.filter(
+        (c) =>
+          !HIDDEN_COLUMNS.has(c.name) &&
+          !BUILTIN_FIELDS.has(c.name) &&
+          !(c.primary && c.default_value)
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [columns]
   );
   const safeColumns = useMemo(() => columns.filter((c) => !HIDDEN_COLUMNS.has(c.name)), [columns]);
-  const visibleColumns = useMemo(() => safeColumns.slice(0, 6), [safeColumns]);
-  const hiddenCount = Math.max(safeColumns.length - visibleColumns.length, 0);
+  const orderedColumns = useMemo(() => {
+    const score = (name: string) => {
+      if (!BUILTIN_FIELDS.has(name)) return 0;
+      return name === 'id' ? 1 : 2;
+    };
+    return [...safeColumns].sort((a, b) => score(a.name) - score(b.name));
+  }, [safeColumns]);
+  const visibleColumns = useMemo(() => orderedColumns.slice(0, 8), [orderedColumns]);
+  const hiddenCount = Math.max(orderedColumns.length - visibleColumns.length, 0);
 
   const refresh = () => setRefreshKey((k) => k + 1);
 
@@ -220,12 +246,18 @@ function AppDataInner() {
         }
       } else values[col.name] = raw;
     }
+    // Campo virtual de senha da tabela nativa User (o backend gera o hash).
+    if (isUsersTable && form.password) values.password = form.password;
     return values;
   };
 
   const submitForm = async () => {
     if (!selected) return;
     setFormError('');
+    if (isUsersTable && !editRow && !form.password?.trim()) {
+      setFormError('Informe uma senha para criar o usuário');
+      return;
+    }
     setSaving(true);
     try {
       const values = coerceValues();
@@ -627,6 +659,27 @@ function AppDataInner() {
                 </div>
               );
             })}
+            {isUsersTable && (
+              <div className="sm:col-span-2">
+                <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-slate-700">
+                  password
+                  <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[9px] font-medium text-violet-700">
+                    Built-in field
+                  </span>
+                  {!editRow && <span className="text-[10px] font-semibold text-amber-600">Req</span>}
+                </label>
+                <input
+                  type="password"
+                  value={form.password ?? ''}
+                  onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+                  placeholder={editRow ? 'Deixe em branco para manter a senha atual' : 'Mínimo de 6 caracteres'}
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/15"
+                />
+                <p className="mt-1 text-[10px] text-slate-400">
+                  A senha é armazenada com hash e nunca é exibida.
+                </p>
+              </div>
+            )}
           </div>
 
           {formError && (

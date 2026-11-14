@@ -1,38 +1,28 @@
-# Dependências
+# === Node / JS ===
 node_modules/
 dist/
 .next/
+*.tsbuildinfo
 
-# Ambiente
+# === Ambiente ===
 .env
 .env.local
 .env.production
 
-# IDE
+# === Sistema ===
+.DS_Store
+Thumbs.db
+*.log
+npm-debug.log*
+
+# === Docker ===
+*.override.yml
+
+# === IDE ===
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# Sistema
-.DS_Store
-Thumbs.db
-
-# Docker
-.docker/
-
-# Logs
-*.log
-logs/
-
-# Backups (exceto exemplos)
+# === Backups locais ===
 backups/
-!backups/.gitkeep
-
-# Chaves SSH
-*.pem
-*.key
-*.key.pub
-
-# TypeScript
-*.tsbuildinfo
