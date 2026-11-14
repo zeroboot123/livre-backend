@@ -44,8 +44,7 @@ export default function LoginPage() {
         {/* Logo & Title */}
         <div className="text-center mb-8">
           <Image src={logo} alt="Livre Backend" className="mx-auto mb-4 h-24 w-auto" />
-          <h1 className="text-2xl font-bold text-[#0F172A]">Bem-vindo ao Livre Backend</h1>
-          <p className="text-sm text-[#64748B] mt-1">Acesse sua plataforma de gerenciamento</p>
+          <p className="text-sm text-[#64748B]">Acesse sua plataforma de gerenciamento</p>
         </div>
 
         {/* Card */}

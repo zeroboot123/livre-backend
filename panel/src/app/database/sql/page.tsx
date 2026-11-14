@@ -146,7 +146,9 @@ function SqlMigrationsInner() {
   }, []);
 
   const addFiles = async (files: FileList | File[]) => {
-    const list = Array.from(files).filter((f) => /\.sql$/i.test(f.name) || f.type === 'text/plain');
+    const list = Array.from(files).filter(
+      (f) => /\.sql$/i.test(f.name) || f.type === 'text/plain' || f.type === 'application/sql'
+    );
     if (!list.length) {
       notify('Selecione arquivos .sql', 'error');
       return;
@@ -179,9 +181,11 @@ function SqlMigrationsInner() {
   };
 
   const handleFileInput = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = event.target.files;
+    // Copia a lista ANTES de limpar o input: o FileList é "vivo" e fica
+    // vazio ao definir value = ''.
+    const files = Array.from(event.target.files || []);
     event.target.value = '';
-    if (files) await addFiles(files);
+    if (files.length) await addFiles(files);
   };
 
   const handleDrop = async (event: React.DragEvent<HTMLDivElement>) => {
