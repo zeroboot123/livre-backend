@@ -1,6 +1,20 @@
 import nodemailer from 'nodemailer';
 import { sql } from '../db/pool.js';
+import { decryptSecret } from '../utils/secret-box.js';
 
+/** Configuração SMTP como fica no banco (senha criptografada ou legado puro). */
+export interface EmailSettingsRow {
+  smtp_host: string;
+  smtp_port: number;
+  smtp_username: string;
+  smtp_password: string;
+  from_name: string;
+  from_email: string;
+  encryption: string;
+  [key: string]: any;
+}
+
+/** Configuração usada em memória para enviar email (senha já decifrada). */
 export interface EmailSettings {
   smtp_host: string;
   smtp_port: number;
@@ -11,22 +25,66 @@ export interface EmailSettings {
   encryption: string;
 }
 
-// Get panel-level email settings
-export async function getPanelEmailSettings(): Promise<EmailSettings | null> {
-  const [settings] = await sql`SELECT * FROM livre_auth.email_settings WHERE id = 1`;
-  if (!settings) return null;
-  if (!settings.smtp_host) return null;
-  return settings as EmailSettings;
+/**
+ * Configuração exposta pela API — NUNCA inclui a senha.
+ * `smtp_password_configured` indica se há credencial salva.
+ */
+export type PublicEmailSettings = Omit<EmailSettingsRow, 'smtp_password'> & {
+  smtp_password_configured: boolean;
+};
+
+/** Remove a senha do registro antes de devolvê-lo ao cliente. */
+export function toPublicEmailSettings(
+  row: EmailSettingsRow | null | undefined
+): PublicEmailSettings | null {
+  if (!row) return null;
+  const { smtp_password, ...rest } = row;
+  return { ...rest, smtp_password_configured: Boolean(smtp_password) };
 }
 
-// Get per-project email settings
-export async function getProjectEmailSettings(projectId: string): Promise<EmailSettings | null> {
+/** Converte o registro do banco no objeto de envio, decifrando a senha. */
+function toRuntimeSettings(row: EmailSettingsRow): EmailSettings {
+  return {
+    smtp_host: row.smtp_host,
+    smtp_port: row.smtp_port,
+    smtp_username: row.smtp_username,
+    smtp_password: decryptSecret(row.smtp_password || ''),
+    from_name: row.from_name,
+    from_email: row.from_email,
+    encryption: row.encryption,
+  };
+}
+
+/** Registro cru (senha ainda criptografada) das configurações do painel. */
+export async function getPanelEmailSettingsRow(): Promise<EmailSettingsRow | null> {
+  const [settings] = await sql`SELECT * FROM livre_auth.email_settings WHERE id = 1`;
+  return (settings as EmailSettingsRow) || null;
+}
+
+/** Registro cru das configurações de um projeto. */
+export async function getProjectEmailSettingsRow(
+  projectId: string
+): Promise<EmailSettingsRow | null> {
   const [settings] = await sql`
     SELECT * FROM livre_auth.project_email_settings WHERE project_id = ${projectId}
   `;
-  if (!settings) return null;
-  if (!settings.smtp_host) return null;
-  return settings as EmailSettings;
+  return (settings as EmailSettingsRow) || null;
+}
+
+// Get panel-level email settings (com senha decifrada, para envio)
+export async function getPanelEmailSettings(): Promise<EmailSettings | null> {
+  const row = await getPanelEmailSettingsRow();
+  if (!row || !row.smtp_host) return null;
+  return toRuntimeSettings(row);
+}
+
+// Get per-project email settings (com senha decifrada, para envio)
+export async function getProjectEmailSettings(
+  projectId: string
+): Promise<EmailSettings | null> {
+  const row = await getProjectEmailSettingsRow(projectId);
+  if (!row || !row.smtp_host) return null;
+  return toRuntimeSettings(row);
 }
 
 // Create a nodemailer transporter from settings
@@ -88,7 +146,7 @@ export async function sendProjectEmail(
   });
 }
 
-// Test email sending
+// Test email sending com um conjunto de configurações já resolvido (senha em claro).
 export async function testEmailSettings(
   settings: EmailSettings,
   to: string

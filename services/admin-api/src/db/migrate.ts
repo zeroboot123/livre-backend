@@ -1,5 +1,6 @@
 import { sql } from './pool.js';
 import { ensureProjectSchema } from './project-schema.js';
+import { encryptSecret } from '../utils/secret-box.js';
 
 /**
  * Migrações idempotentes aplicadas na inicialização do admin-api.
@@ -248,6 +249,32 @@ export async function runMigrations() {
       updated_at timestamptz NOT NULL DEFAULT now()
     )
   `;
+
+  // ── Backfill: cifra senhas SMTP legadas (texto puro) ────────
+  // Idempotente: só atua em valores que ainda não usam o prefixo enc:v1:.
+  const plainPanel = (await sql`
+    SELECT id, smtp_password FROM livre_auth.email_settings
+    WHERE smtp_password <> '' AND smtp_password NOT LIKE 'enc:v1:%'
+  `) as any[];
+  for (const row of plainPanel) {
+    await sql`
+      UPDATE livre_auth.email_settings
+      SET smtp_password = ${encryptSecret(row.smtp_password)}
+      WHERE id = ${row.id}
+    `;
+  }
+
+  const plainProjects = (await sql`
+    SELECT id, smtp_password FROM livre_auth.project_email_settings
+    WHERE smtp_password <> '' AND smtp_password NOT LIKE 'enc:v1:%'
+  `) as any[];
+  for (const row of plainProjects) {
+    await sql`
+      UPDATE livre_auth.project_email_settings
+      SET smtp_password = ${encryptSecret(row.smtp_password)}
+      WHERE id = ${row.id}
+    `;
+  }
 
   // ── Backfill: garante um schema para projetos antigos ───────
   const sanitize = (value: string) => {

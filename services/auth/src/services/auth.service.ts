@@ -2,6 +2,7 @@ import { sql } from '../db/pool.js';
 import { hashPassword, verifyPassword } from '../utils/password.js';
 import { generateAccessToken, generateRefreshToken, hashToken } from '../utils/crypto.js';
 import { parseDuration } from '../utils/helpers.js';
+import { decryptSecret } from '../utils/secret-box.js';
 import { config } from '../config/index.js';
 import nodemailer from 'nodemailer';
 
@@ -328,7 +329,7 @@ export async function forgotPassword(email: string) {
       smtp_host: settings.smtp_host,
       smtp_port: settings.smtp_port,
       smtp_username: settings.smtp_username,
-      smtp_password: settings.smtp_password,
+      smtp_password: decryptSecret(settings.smtp_password || ''),
       from_name: settings.from_name,
       from_email: settings.from_email,
       encryption: settings.encryption,

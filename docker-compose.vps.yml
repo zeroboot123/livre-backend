@@ -33,6 +33,29 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  minio:
+    image: bitnamilegacy/minio:latest
+    container_name: livre-minio
+    restart: unless-stopped
+    networks:
+      - livre_backend_net
+    volumes:
+      - minio_data:/bitnami/minio/data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_DEFAULT_BUCKETS: ${MINIO_BUCKET:-livre-files}
+      MINIO_BROWSER: "off"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   # ==============================================================
   # PostgREST - API REST Automática
   # ==============================================================
@@ -55,7 +78,7 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.livre-postgrest.rule=Host(`${DOMAIN:-api.livrebackend.com.br}`) && PathPrefix(`/api/rest`)"
-      - "traefik.http.routers.livre-postgrest.entrypoints=https"
+      - "traefik.http.routers.livre-postgrest.entrypoints=websecure"
       - "traefik.http.routers.livre-postgrest.tls.certresolver=letsencrypt"
       - "traefik.http.services.livre-postgrest.loadbalancer.server.port=3000"
       - "traefik.http.middlewares.livre-postgrest-strip.stripprefix.prefixes=/api/rest"
@@ -101,10 +124,12 @@ services:
       ARGON2_TIME_COST: ${ARGON2_TIME_COST:-2}
       ARGON2_MEMORY_COST: ${ARGON2_MEMORY_COST:-19456}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      # Chave (fora do banco) para cifrar a senha SMTP em repouso (AES-256-GCM).
+      EMAIL_ENCRYPTION_KEY: ${EMAIL_ENCRYPTION_KEY:-}
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.livre-auth.rule=Host(`${DOMAIN:-api.livrebackend.com.br}`) && PathPrefix(`/auth`)"
-      - "traefik.http.routers.livre-auth.entrypoints=https"
+      - "traefik.http.routers.livre-auth.entrypoints=websecure"
       - "traefik.http.routers.livre-auth.tls.certresolver=letsencrypt"
       - "traefik.http.services.livre-auth.loadbalancer.server.port=3001"
       - "traefik.http.middlewares.livre-auth-strip.stripprefix.prefixes=/auth"
@@ -140,18 +165,28 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      minio:
+        condition: service_started
     environment:
       PORT: 3002
       NODE_ENV: production
       DATABASE_URL: postgres://${DB_SUPERUSER}:${DB_SUPERPASS}@postgres:5432/livre_backend
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       BACKUP_DIR: /backups
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_REGION: us-east-1
+      MINIO_BUCKET: livre-files
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MAX_UPLOAD_MB: 25
+      # Chave (fora do banco) para cifrar a senha SMTP em repouso (AES-256-GCM).
+      EMAIL_ENCRYPTION_KEY: ${EMAIL_ENCRYPTION_KEY:-}
     volumes:
       - ./backups:/backups:rw
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.livre-admin-api.rule=Host(`${DOMAIN:-api.livrebackend.com.br}`) && PathPrefix(`/admin/api`)"
-      - "traefik.http.routers.livre-admin-api.entrypoints=https"
+      - "traefik.http.routers.livre-admin-api.entrypoints=websecure"
       - "traefik.http.routers.livre-admin-api.tls.certresolver=letsencrypt"
       - "traefik.http.services.livre-admin-api.loadbalancer.server.port=3002"
       - "traefik.http.middlewares.livre-admin-api-strip.stripprefix.prefixes=/admin/api"
@@ -196,7 +231,7 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.livre-visual-db.rule=Host(`${DOMAIN:-api.livrebackend.com.br}`) && PathPrefix(`/admin/visual-db`)"
-      - "traefik.http.routers.livre-visual-db.entrypoints=https"
+      - "traefik.http.routers.livre-visual-db.entrypoints=websecure"
       - "traefik.http.routers.livre-visual-db.tls.certresolver=letsencrypt"
       - "traefik.http.services.livre-visual-db.loadbalancer.server.port=3004"
       - "traefik.http.middlewares.livre-visual-db-strip.stripprefix.prefixes=/admin/visual-db"
@@ -240,7 +275,7 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.livre-admin.rule=Host(`${DOMAIN:-api.livrebackend.com.br}`) && PathPrefix(`/admin`)"
-      - "traefik.http.routers.livre-admin.entrypoints=https"
+      - "traefik.http.routers.livre-admin.entrypoints=websecure"
       - "traefik.http.routers.livre-admin.tls.certresolver=letsencrypt"
       - "traefik.http.services.livre-admin.loadbalancer.server.port=3003"
       - "traefik.http.middlewares.livre-admin-strip.stripprefix.prefixes=/admin"
@@ -262,6 +297,8 @@ volumes:
   postgres_data:
     driver: local
   backups:
+    driver: local
+  minio_data:
     driver: local
 
 # ==============================================================

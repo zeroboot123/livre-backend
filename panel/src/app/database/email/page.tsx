@@ -22,11 +22,13 @@ function EmailInner() {
     smtp_host: '',
     smtp_port: 587,
     smtp_username: '',
-    smtp_password: '',
     from_name: '',
     from_email: '',
     encryption: 'tls',
   });
+  // A senha é mantida fora do objeto de configurações: o backend nunca a devolve.
+  const [password, setPassword] = useState('');
+  const [passwordConfigured, setPasswordConfigured] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -43,6 +45,7 @@ function EmailInner() {
       const data = await fetchProjectEmailSettings();
       if (data.settings) {
         setSettings(data.settings);
+        setPasswordConfigured(!!data.settings.smtp_password_configured);
       }
     } catch {
       // ignored
@@ -66,7 +69,17 @@ function EmailInner() {
     setSaved(false);
     setError('');
     try {
-      await updateProjectEmailSettings(settings);
+      // Só envia a senha quando o usuário digitou uma nova.
+      const payload: Partial<EmailSettingsData> = { ...settings };
+      const newPassword = password.trim();
+      if (newPassword) payload.smtp_password = newPassword;
+
+      const result = await updateProjectEmailSettings(payload);
+      if (result.settings) {
+        setSettings(result.settings);
+        setPasswordConfigured(!!result.settings.smtp_password_configured);
+      }
+      setPassword('');
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch (err: any) {
@@ -158,14 +171,32 @@ function EmailInner() {
 
               {/* Password */}
               <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700">Senha</label>
+                <div className="mb-1 flex items-center justify-between">
+                  <label className="block text-sm font-medium text-slate-700">Senha</label>
+                  {passwordConfigured && !password && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
+                      <CheckCircle className="h-3 w-3" />
+                      Senha configurada
+                    </span>
+                  )}
+                </div>
                 <input
                   type="password"
-                  value={settings.smtp_password}
-                  onChange={(e) => handleChange('smtp_password', e.target.value)}
-                  placeholder="••••••••"
+                  value={password}
+                  onChange={(e) => {
+                    setPassword(e.target.value);
+                    setSaved(false);
+                    setError('');
+                  }}
+                  placeholder={passwordConfigured ? '•••••••• (deixe em branco para manter)' : '••••••••'}
+                  autoComplete="new-password"
                   className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/15"
                 />
+                <p className="mt-1 text-xs text-slate-500">
+                  {passwordConfigured
+                    ? 'Uma senha já está salva. Preencha apenas se quiser substituí-la.'
+                    : 'A senha nunca é exibida após ser salva.'}
+                </p>
               </div>
 
               {/* From Name */}

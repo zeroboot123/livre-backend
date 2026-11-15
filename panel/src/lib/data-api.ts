@@ -535,7 +535,10 @@ export interface EmailSettingsData {
   smtp_host: string;
   smtp_port: number;
   smtp_username: string;
-  smtp_password: string;
+  /** Senha em claro — usada apenas em requisições (nunca vem do GET). */
+  smtp_password?: string;
+  /** Indica se há senha salva no backend; a senha real nunca é retornada. */
+  smtp_password_configured?: boolean;
   from_name: string;
   from_email: string;
   encryption: string;

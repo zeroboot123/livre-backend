@@ -9,7 +9,13 @@ import {
 } from '@aws-sdk/client-s3';
 import { sql } from './db/pool.js';
 import { signToken, verifyToken } from './utils/crypto.js';
+import { decryptSecret, encryptSecret, normalizeIncomingPassword } from './utils/secret-box.js';
 import { hashPassword, verifyPassword, verifyAdminPassword } from './utils/password.js';
+import {
+  getPanelEmailSettingsRow,
+  getProjectEmailSettingsRow,
+  toPublicEmailSettings,
+} from './services/email.js';
 import { BUILTIN_FIELDS, USER_BUILTIN_FIELDS, ensureProjectSchema, resetProjectSchema } from './db/project-schema.js';
 import { runMigrations } from './db/migrate.js';
 import {
@@ -100,42 +106,72 @@ app.get('/stats', async (request) => {
 // ============================================================
 
 // GET panel-level email settings
+// A senha SMTP nunca é devolvida; apenas o indicador smtp_password_configured.
 app.get('/email-settings', async (request: any, reply) => {
-  const [settings] = await sql`SELECT * FROM livre_auth.email_settings WHERE id = 1`;
-  return { settings: settings || null };
+  const row = await getPanelEmailSettingsRow();
+  return { settings: toPublicEmailSettings(row) };
 });
 
 // PUT panel-level email settings
+// A senha só é alterada quando um valor novo (não vazio e não máscara) é enviado.
 app.put('/email-settings', async (request: any, reply) => {
-  const { smtp_host, smtp_port, smtp_username, smtp_password, from_name, from_email, encryption } = request.body || {};
+  const body = request.body || {};
+  // postgres.js não aceita `undefined`: campos ausentes viram NULL (COALESCE preserva).
+  const nullable = <T,>(v: T | undefined): T | null => (v === undefined ? null : v);
+  const smtp_host = nullable(body.smtp_host);
+  const smtp_port = nullable(body.smtp_port);
+  const smtp_username = nullable(body.smtp_username);
+  const from_name = nullable(body.from_name);
+  const from_email = nullable(body.from_email);
+  const encryption = nullable(body.encryption);
+  const newPassword = normalizeIncomingPassword(body.smtp_password);
+  const encryptedPassword = newPassword === null ? null : encryptSecret(newPassword);
+
   await sql`
     UPDATE livre_auth.email_settings SET
       smtp_host = COALESCE(${smtp_host}, smtp_host),
       smtp_port = COALESCE(${smtp_port}, smtp_port),
       smtp_username = COALESCE(${smtp_username}, smtp_username),
-      smtp_password = COALESCE(${smtp_password}, smtp_password),
+      smtp_password = COALESCE(${encryptedPassword}, smtp_password),
       from_name = COALESCE(${from_name}, from_name),
       from_email = COALESCE(${from_email}, from_email),
       encryption = COALESCE(${encryption}, encryption),
       updated_at = NOW()
     WHERE id = 1
   `;
-  const [settings] = await sql`SELECT * FROM livre_auth.email_settings WHERE id = 1`;
-  return { settings };
+
+  const row = await getPanelEmailSettingsRow();
+  return { settings: toPublicEmailSettings(row) };
 });
 
 // POST test email (panel-level)
 app.post('/email-settings/test', async (request: any, reply) => {
-  const { to, smtp_host, smtp_port, smtp_username, smtp_password, from_name, from_email, encryption } = request.body || {};
-  if (!to || !smtp_host) {
-    return reply.code(400).send({ error: 'Destinatário e servidor SMTP são obrigatórios' });
+  const body = request.body || {};
+  const { to } = body;
+  if (!to) {
+    return reply.code(400).send({ error: 'Destinatário é obrigatório' });
   }
+
+  // Senha em branco => usa a credencial já salva (permite testar sem redigitar).
+  const stored = await getPanelEmailSettingsRow();
+  const incomingPassword = normalizeIncomingPassword(body.smtp_password);
+  const password = incomingPassword ?? decryptSecret(stored?.smtp_password || '');
+
+  const smtp_host = body.smtp_host || stored?.smtp_host || '';
+  if (!smtp_host) {
+    return reply.code(400).send({ error: 'Servidor SMTP é obrigatório' });
+  }
+
   try {
     const { testEmailSettings } = await import('./services/email.js');
     await testEmailSettings({
-      smtp_host, smtp_port: smtp_port || 587, smtp_username: smtp_username || '',
-      smtp_password: smtp_password || '', from_name: from_name || '', from_email: from_email || '',
-      encryption: encryption || 'tls',
+      smtp_host,
+      smtp_port: Number(body.smtp_port) || stored?.smtp_port || 587,
+      smtp_username: body.smtp_username ?? stored?.smtp_username ?? '',
+      smtp_password: password,
+      from_name: body.from_name ?? stored?.from_name ?? '',
+      from_email: body.from_email ?? stored?.from_email ?? '',
+      encryption: body.encryption || stored?.encryption || 'tls',
     }, to);
     return { ok: true, message: 'Email de teste enviado com sucesso' };
   } catch (err: any) {
@@ -144,38 +180,47 @@ app.post('/email-settings/test', async (request: any, reply) => {
 });
 
 // GET per-project email settings
+// A senha SMTP nunca é devolvida; apenas o indicador smtp_password_configured.
 app.get('/email-settings/project', async (request: any, reply) => {
   const ctx = await requireProject(request, reply);
   if (!ctx) return;
-  const [settings] = await sql`
-    SELECT * FROM livre_auth.project_email_settings WHERE project_id = ${ctx.projectId}
-  `;
-  return { settings: settings || null };
+  const row = await getProjectEmailSettingsRow(ctx.projectId);
+  return { settings: toPublicEmailSettings(row) };
 });
 
 // PUT per-project email settings
+// A senha só é alterada quando um valor novo (não vazio e não máscara) é enviado.
 app.put('/email-settings/project', async (request: any, reply) => {
   const ctx = await requireProject(request, reply);
   if (!ctx) return;
-  const { smtp_host, smtp_port, smtp_username, smtp_password, from_name, from_email, encryption } = request.body || {};
+  const body = request.body || {};
+  // postgres.js não aceita `undefined`: campos ausentes viram NULL (COALESCE preserva).
+  const nullable = <T,>(v: T | undefined): T | null => (v === undefined ? null : v);
+  const smtp_host = nullable(body.smtp_host);
+  const smtp_port = nullable(body.smtp_port);
+  const smtp_username = nullable(body.smtp_username);
+  const from_name = nullable(body.from_name);
+  const from_email = nullable(body.from_email);
+  const encryption = nullable(body.encryption);
+  const newPassword = normalizeIncomingPassword(body.smtp_password);
+  const encryptedPassword = newPassword === null ? null : encryptSecret(newPassword);
 
   await sql`
     INSERT INTO livre_auth.project_email_settings (project_id, smtp_host, smtp_port, smtp_username, smtp_password, from_name, from_email, encryption)
-    VALUES (${ctx.projectId}, ${smtp_host || ''}, ${smtp_port || 587}, ${smtp_username || ''}, ${smtp_password || ''}, ${from_name || ''}, ${from_email || ''}, ${encryption || 'tls'})
+    VALUES (${ctx.projectId}, ${smtp_host ?? ''}, ${smtp_port ?? 587}, ${smtp_username ?? ''}, ${encryptedPassword ?? ''}, ${from_name ?? ''}, ${from_email ?? ''}, ${encryption ?? 'tls'})
     ON CONFLICT (project_id) DO UPDATE SET
       smtp_host = COALESCE(${smtp_host}, project_email_settings.smtp_host),
       smtp_port = COALESCE(${smtp_port}, project_email_settings.smtp_port),
       smtp_username = COALESCE(${smtp_username}, project_email_settings.smtp_username),
-      smtp_password = COALESCE(${smtp_password}, project_email_settings.smtp_password),
+      smtp_password = COALESCE(${encryptedPassword}, project_email_settings.smtp_password),
       from_name = COALESCE(${from_name}, project_email_settings.from_name),
       from_email = COALESCE(${from_email}, project_email_settings.from_email),
       encryption = COALESCE(${encryption}, project_email_settings.encryption),
       updated_at = NOW()
   `;
-  const [settings] = await sql`
-    SELECT * FROM livre_auth.project_email_settings WHERE project_id = ${ctx.projectId}
-  `;
-  return { settings };
+
+  const row = await getProjectEmailSettingsRow(ctx.projectId);
+  return { settings: toPublicEmailSettings(row) };
 });
 
 // POST test email (per-project)

@@ -1,4 +1,5 @@
 # 🚀 Livre Backend
+
 Plataforma **Backend as a Service (BaaS)** — própria, modular, leve e segura.
 
 <img width="1355" height="626" alt="livre-backend" src="https://github.com/user-attachments/assets/acecbc01-ff72-4481-9694-99a90a774f56" />
@@ -90,6 +91,7 @@ No EasyPanel, vá em **"Environment"** do seu projeto e adicione:
 | `PUBLIC_URL` | ✅ | URL pública do seu domínio | `https://meuapp.com.br` |
 | `DB_SUPERPASS` | ✅ | Senha do PostgreSQL | `senha_forte_123` |
 | `JWT_SECRET` | ✅ | Chave para assinar tokens JWT (mínimo 32 caracteres) | `openssl rand -hex 32` |
+| `EMAIL_ENCRYPTION_KEY` | ❌ | Chave dedicada para cifrar a senha SMTP em repouso (AES-256-GCM). Se vazia, usa `JWT_SECRET`. Recomendado definir uma própria. | `openssl rand -hex 32` |
 | `MINIO_ROOT_USER` | ✅ | Usuário admin do MinIO (storage) | `minio_admin` |
 | `MINIO_ROOT_PASSWORD` | ✅ | Senha do MinIO | `outra_senha_forte` |
 | `MINIO_BUCKET` | ❌ | Nome do bucket (padrão: `livre-files`) | `meus-arquivos` |

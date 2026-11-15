@@ -78,6 +78,8 @@ services:
       ARGON2_TIME_COST: 2
       ARGON2_MEMORY_COST: 19456
       CORS_ORIGINS: "*"
+      # Chave (fora do banco) para cifrar a senha SMTP em repouso (AES-256-GCM).
+      EMAIL_ENCRYPTION_KEY: ${EMAIL_ENCRYPTION_KEY:-}
     deploy:
       resources:
         limits:
@@ -106,6 +108,8 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       MAX_UPLOAD_MB: 25
+      # Chave (fora do banco) para cifrar a senha SMTP em repouso (AES-256-GCM).
+      EMAIL_ENCRYPTION_KEY: ${EMAIL_ENCRYPTION_KEY:-}
       API_BASE_PATH: /admin/api
     deploy:
       resources:

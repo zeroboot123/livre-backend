@@ -35,6 +35,29 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  minio:
+    image: bitnamilegacy/minio:latest
+    container_name: livre-minio
+    restart: unless-stopped
+    networks:
+      - livre_backend_net
+    volumes:
+      - minio_data:/bitnami/minio/data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_DEFAULT_BUCKETS: ${MINIO_BUCKET:-livre-files}
+      MINIO_BROWSER: "off"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   # ==============================================================
   # PostgREST - API REST Automática
   # ==============================================================
@@ -93,6 +116,8 @@ services:
       ARGON2_TIME_COST: ${ARGON2_TIME_COST:-2}
       ARGON2_MEMORY_COST: ${ARGON2_MEMORY_COST:-19456}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      # Chave (fora do banco) para cifrar a senha SMTP em repouso (AES-256-GCM).
+      EMAIL_ENCRYPTION_KEY: ${EMAIL_ENCRYPTION_KEY:-}
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3001/health || exit 1"]
       interval: 15s
@@ -123,12 +148,22 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      minio:
+        condition: service_started
     environment:
       PORT: 3002
       NODE_ENV: production
       DATABASE_URL: postgres://${PG_ADMINUSER}:${PG_ADMINPASS}@postgres:5432/livre_backend
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       BACKUP_DIR: /backups
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_REGION: us-east-1
+      MINIO_BUCKET: livre-files
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MAX_UPLOAD_MB: 25
+      # Chave (fora do banco) para cifrar a senha SMTP em repouso (AES-256-GCM).
+      EMAIL_ENCRYPTION_KEY: ${EMAIL_ENCRYPTION_KEY:-}
     volumes:
       - ./backups:/backups:rw
     healthcheck:
@@ -219,6 +254,8 @@ volumes:
   postgres_data:
     driver: local
   backups:
+    driver: local
+  minio_data:
     driver: local
 
 # ==============================================================

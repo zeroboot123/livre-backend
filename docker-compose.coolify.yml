@@ -1,0 +1,248 @@
+# ==========================================================================
+# LIVRE BACKEND - docker-compose para COOLIFY
+# --------------------------------------------------------------------------
+# Diferenças em relação ao compose do EasyPanel:
+#  - Sem labels do Traefik nem rede "easypanel" (o Coolify gerencia roteamento).
+#  - Sem "container_name" fixo (o Coolify cria nomes únicos por projeto).
+#  - Sem publicação de portas do Postgres/MinIO (nada de 5432/9000 expostos).
+#  - `healthcheck` explícito em TODOS os serviços + `depends_on` com
+#    `condition: service_healthy` (o Coolify colore o serviço de verde a
+#    partir do healthcheck do Docker).
+#
+# As variáveis abaixo são preenchidas na aba "Environment Variables" do
+# Coolify (elas chegam ao compose via ${VAR}).
+# ==========================================================================
+
+services:
+  # ==============================================================
+  # PostgreSQL - Banco de Dados Principal
+  # ==============================================================
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_SUPERUSER:-livre_admin}
+      POSTGRES_PASSWORD: ${DB_SUPERPASS:?defina DB_SUPERPASS}
+      POSTGRES_DB: livre_backend
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_SUPERUSER:-livre_admin} -d livre_backend"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: ${PG_MEMORY_LIMIT:-512M}
+
+  # ==============================================================
+  # MinIO - Storage S3 (arquivos)
+  # ==============================================================
+  minio:
+    image: bitnamilegacy/minio:latest
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?defina MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?defina MINIO_ROOT_PASSWORD}
+      MINIO_DEFAULT_BUCKETS: ${MINIO_BUCKET:-livre-files}
+      MINIO_BROWSER: "off"
+    volumes:
+      - minio_data:/bitnami/minio/data
+    healthcheck:
+      # A imagem Bitnami tem curl em /usr/bin/curl (wget NÃO existe).
+      # Se trocar para a imagem oficial minio/minio, use o fallback abaixo.
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live || exit 1"]
+      # Fallback sem curl (imagem oficial minio/minio):
+      # test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ==============================================================
+  # PostgREST - API REST automática
+  # ==============================================================
+  postgrest:
+    image: postgrest/postgrest:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: postgres://${DB_SUPERUSER:-livre_admin}:${DB_SUPERPASS}@postgres:5432/livre_backend
+      PGRST_DB_SCHEMA: public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_OPENAPI_SERVER_PROXY_URI: ${PUBLIC_URL:-http://localhost}/api/rest
+      PGRST_JWT_SECRET: ${JWT_SECRET:?defina JWT_SECRET}
+    healthcheck:
+      # A imagem do PostgREST não tem shell/curl por padrão; o proxy web do
+      # próprio container é a melhor sonda disponível.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  # ==============================================================
+  # Auth Service (Node/TS) - porta 3001 - GET /health
+  # ==============================================================
+  auth-service:
+    build:
+      context: ./services/auth
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: 3001
+      NODE_ENV: production
+      DATABASE_URL: postgres://${PG_AUTHUSER}:${PG_AUTHPASS}@postgres:5432/livre_backend
+      JWT_SECRET: ${JWT_SECRET:?defina JWT_SECRET}
+      JWT_EXPIRATION: ${JWT_EXPIRATION:-15m}
+      JWT_REFRESH_EXPIRATION: ${JWT_REFRESH_EXPIRATION:-7d}
+      ARGON2_TIME_COST: ${ARGON2_TIME_COST:-2}
+      ARGON2_MEMORY_COST: ${ARGON2_MEMORY_COST:-19456}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      # Chave (fora do banco) para cifrar a senha SMTP em repouso (AES-256-GCM).
+      EMAIL_ENCRYPTION_KEY: ${EMAIL_ENCRYPTION_KEY:-}
+    healthcheck:
+      # node:22-alpine tem wget (busybox). NÃO tem curl.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3001/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ==============================================================
+  # Admin API (Node/TS) - porta 3002 - GET /health
+  # ==============================================================
+  admin-api:
+    build:
+      context: ./services/admin-api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      PORT: 3002
+      NODE_ENV: production
+      DATABASE_URL: postgres://${PG_ADMINUSER}:${PG_ADMINPASS}@postgres:5432/livre_backend
+      JWT_SECRET: ${JWT_SECRET:?defina JWT_SECRET}
+      BACKUP_DIR: /backups
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_REGION: us-east-1
+      MINIO_BUCKET: ${MINIO_BUCKET:-livre-files}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-25}
+      # Chave (fora do banco) para cifrar a senha SMTP em repouso (AES-256-GCM).
+      EMAIL_ENCRYPTION_KEY: ${EMAIL_ENCRYPTION_KEY:-}
+    volumes:
+      - ./backups:/backups:rw
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3002/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ==============================================================
+  # Visual DB (Node/TS) - porta 3004 - GET /health
+  # ==============================================================
+  visual-db:
+    build:
+      context: ./services/visual-db
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: 3004
+      NODE_ENV: production
+      DATABASE_URL: postgres://${PG_ADMINUSER}:${PG_ADMINPASS}@postgres:5432/livre_backend
+      JWT_SECRET: ${JWT_SECRET:?defina JWT_SECRET}
+      POSTGREST_URL: http://postgrest:3000
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3004/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ==============================================================
+  # Admin Panel (Next.js) - porta 3003 - GET /api/health
+  # ==============================================================
+  admin-panel:
+    build:
+      context: ./panel
+      dockerfile: Dockerfile
+      args:
+        # NEXT_PUBLIC_* é embutida no bundle durante o build.
+        NEXT_PUBLIC_API_URL: ${PUBLIC_URL:-http://localhost}/admin/api
+        NEXT_PUBLIC_AUTH_URL: ${PUBLIC_URL:-http://localhost}/auth
+        NEXT_PUBLIC_VISUAL_DB_URL: ${PUBLIC_URL:-http://localhost}/admin/visual-db
+    restart: unless-stopped
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      admin-api:
+        condition: service_healthy
+      visual-db:
+        condition: service_healthy
+    environment:
+      PORT: 3003
+      HOSTNAME: 0.0.0.0
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: ${PUBLIC_URL:-http://localhost}/admin/api
+      NEXT_PUBLIC_AUTH_URL: ${PUBLIC_URL:-http://localhost}/auth
+      NEXT_PUBLIC_VISUAL_DB_URL: ${PUBLIC_URL:-http://localhost}/admin/visual-db
+    healthcheck:
+      # Next.js com basePath: '/admin' -> a rota de health fica em /admin/api/health.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3003/admin/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+# ==============================================================
+# Volumes
+# ==============================================================
+volumes:
+  postgres_data:
+    driver: local
+  minio_data:
+    driver: local
+  backups:
+    driver: local
