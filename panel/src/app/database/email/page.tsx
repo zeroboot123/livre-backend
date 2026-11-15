@@ -303,7 +303,7 @@ function EmailInner() {
 
 export default function EmailPage() {
   return (
-    <DataShell showSidebar={true}>
+    <DataShell showSidebar={false}>
       <EmailInner />
     </DataShell>
   );
