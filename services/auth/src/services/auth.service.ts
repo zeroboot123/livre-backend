@@ -16,6 +16,57 @@ interface LoginInput {
   password: string;
 }
 
+interface SmtpSettings {
+  smtp_host: string;
+  smtp_port: number;
+  smtp_username: string;
+  smtp_password: string;
+  from_name: string;
+  from_email: string;
+  encryption: string;
+}
+
+// Cria o transporter SMTP a partir das configurações salvas no painel.
+// Mantém o mesmo comportamento do admin-api (inclusive TLS sem validação
+// estrita de certificado), para que ambos os serviços usem o mesmo servidor.
+function createTransporter(settings: SmtpSettings) {
+  const transporterConfig: Record<string, any> = {
+    host: settings.smtp_host,
+    port: Number(settings.smtp_port) || 587,
+  };
+
+  if (settings.encryption === 'ssl') {
+    transporterConfig.secure = true;
+  } else if (settings.encryption === 'tls') {
+    transporterConfig.secure = false;
+    transporterConfig.tls = { rejectUnauthorized: false };
+  } else {
+    transporterConfig.secure = false;
+  }
+
+  if (settings.smtp_username && settings.smtp_password) {
+    transporterConfig.auth = {
+      user: settings.smtp_username,
+      pass: settings.smtp_password,
+    };
+  }
+
+  return nodemailer.createTransport(transporterConfig);
+}
+
+// Formata o remetente, usando apenas o email quando o nome não foi informado.
+function formatFrom(fromName: string, fromEmail: string) {
+  const email = (fromEmail || '').trim();
+  const name = (fromName || '').trim();
+  if (!name) return email;
+  return `"${name}" <${email}>`;
+}
+
+// Link de redefinição de senha (rota do painel).
+function buildResetUrl(token: string) {
+  return `${config.publicUrl.replace(/\/+$/, '')}/admin/reset-password?token=${token}`;
+}
+
 // Status de instalação: true enquanto não existir nenhum usuário.
 export async function getSetupStatus() {
   const [row] = await sql`SELECT COUNT(*)::int AS count FROM livre_auth.users`;
@@ -264,32 +315,49 @@ export async function forgotPassword(email: string) {
     const [settings] = await sql`
       SELECT * FROM livre_auth.email_settings WHERE id = 1
     `;
-    if (settings && settings.smtp_host) {
-      const transporter = nodemailer.createTransport({
-        host: settings.smtp_host,
-        port: settings.smtp_port,
-        secure: settings.encryption === 'ssl',
-        auth: settings.smtp_username ? {
-          user: settings.smtp_username,
-          pass: settings.smtp_password,
-        } : undefined,
-      });
 
-      const resetUrl = `${config.publicUrl}/reset-password?token=${resetToken}`;
-      await transporter.sendMail({
-        from: `"${settings.from_name}" <${settings.from_email}>`,
-        to: email,
-        subject: 'Recuperação de senha - Livre Backend',
-        html: `<p>Clique no link abaixo para redefinir sua senha:</p><p><a href="${resetUrl}">${resetUrl}</a></p><p>Este link expira em 1 hora.</p>`,
-      });
+    if (!settings || !settings.smtp_host) {
+      console.warn(
+        `[forgot-password] SMTP do painel não configurado em livre_auth.email_settings. ` +
+        `Configure em /admin/settings. Link de fallback: ${buildResetUrl(resetToken)}`
+      );
       return;
     }
-  } catch (err) {
-    console.error('Erro ao enviar email de recuperação:', err);
-  }
 
-  // Fallback: log do link mesmo se email não estiver configurado
-  console.log(`🔗 Link de recuperação para ${email}: /reset-password?token=${resetToken}`);
+    const transporter = createTransporter({
+      smtp_host: settings.smtp_host,
+      smtp_port: settings.smtp_port,
+      smtp_username: settings.smtp_username,
+      smtp_password: settings.smtp_password,
+      from_name: settings.from_name,
+      from_email: settings.from_email,
+      encryption: settings.encryption,
+    });
+
+    const resetUrl = buildResetUrl(resetToken);
+
+    const info = await transporter.sendMail({
+      from: formatFrom(settings.from_name, settings.from_email),
+      to: email,
+      subject: 'Recuperação de senha - Livre Backend',
+      html: `
+        <p>Clique no link abaixo para redefinir sua senha:</p>
+        <p><a href="${resetUrl}">${resetUrl}</a></p>
+        <p>Este link expira em 1 hora.</p>
+      `,
+    });
+
+    console.log(
+      `[forgot-password] Email de recuperação enviado para ${email} ` +
+      `(messageId=${info.messageId || 'n/a'})`
+    );
+  } catch (err: any) {
+    console.error(
+      `[forgot-password] Falha ao enviar email de recuperação para ${email}: ` +
+      `${err?.message || err}`
+    );
+    if (err?.code) console.error(`[forgot-password] Código de erro SMTP: ${err.code}`);
+  }
 }
 
 // Reset password

@@ -9,7 +9,7 @@ import logo from '@/../public/logo-mark.png';
 import '../styles/globals.css';
 
 // usePathname() returns paths WITHOUT the basePath ('/admin') prefix.
-const publicPaths = ['/', '/login', '/register', '/forgot-password'];
+const publicPaths = ['/', '/login', '/register', '/forgot-password', '/reset-password'];
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
