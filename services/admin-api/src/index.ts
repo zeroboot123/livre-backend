@@ -241,46 +241,6 @@ app.post('/email-settings/project/test', async (request: any, reply) => {
   }
 });
 
-// ============================================================
-// SITE SETTINGS (PIX / apoio ao projeto)
-// Somente doações voluntárias: não há gateway nem cobrança automática.
-// ============================================================
-app.get('/site-settings', async () => {
-  const [settings] = await sql`
-    SELECT pix_key, pix_qr_image, updated_at FROM livre_auth.site_settings WHERE id = 1
-  `;
-  return { settings: settings || { pix_key: '', pix_qr_image: '' } };
-});
-
-app.put('/site-settings', async (request: any, reply) => {
-  const body = request.body || {};
-
-  const pix_key =
-    typeof body.pix_key === 'string' ? body.pix_key.trim().slice(0, 500) : null;
-  const pix_qr_image =
-    typeof body.pix_qr_image === 'string' ? body.pix_qr_image.trim() : null;
-
-  if (pix_qr_image && !/^data:image\/(png|jpe?g|webp);base64,/i.test(pix_qr_image)) {
-    return reply.code(400).send({ error: 'Imagem do QR Code inválida (use PNG, JPG ou WebP)' });
-  }
-  if (pix_qr_image && pix_qr_image.length > 2_000_000) {
-    return reply.code(400).send({ error: 'Imagem do QR Code muito grande (máx. ~1,5 MB)' });
-  }
-
-  await sql`
-    UPDATE livre_auth.site_settings SET
-      pix_key = COALESCE(${pix_key}, pix_key),
-      pix_qr_image = COALESCE(${pix_qr_image}, pix_qr_image),
-      updated_at = NOW()
-    WHERE id = 1
-  `;
-
-  const [settings] = await sql`
-    SELECT pix_key, pix_qr_image, updated_at FROM livre_auth.site_settings WHERE id = 1
-  `;
-  return { settings };
-});
-
 // Listar projetos
 app.get('/projects', async () => {
   const projects = (await sql`

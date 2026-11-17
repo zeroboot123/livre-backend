@@ -587,26 +587,3 @@ export async function testProjectEmailSettings(
     body: JSON.stringify({ to }),
   });
 }
-
-// ============================================================
-// Site settings (PIX / apoio ao projeto)
-// ============================================================
-export interface SiteSettingsData {
-  pix_key: string;
-  /** QR Code em data URL (data:image/png;base64,...) ou vazio. */
-  pix_qr_image: string;
-  updated_at?: string;
-}
-
-export async function fetchSiteSettings(): Promise<{ settings: SiteSettingsData }> {
-  return apiFetch('/site-settings');
-}
-
-export async function updateSiteSettings(
-  data: Partial<Pick<SiteSettingsData, 'pix_key' | 'pix_qr_image'>>
-): Promise<{ settings: SiteSettingsData }> {
-  return apiFetch('/site-settings', {
-    method: 'PUT',
-    body: JSON.stringify(data),
-  });
-}

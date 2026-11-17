@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
 import {
   ArrowRight,
@@ -15,21 +15,14 @@ import {
   Users,
 } from 'lucide-react';
 import { Card } from '@/components/ui/Card';
-import { fetchSiteSettings, type SiteSettingsData } from '@/lib/data-api';
+import { PIX_KEY, PIX_QR_SRC } from '@/lib/site-info';
 import { APP_VERSION } from '@/lib/version';
 
 export default function HomePage() {
-  const [site, setSite] = useState<SiteSettingsData>({ pix_key: '', pix_qr_image: '' });
   const [copied, setCopied] = useState(false);
 
-  useEffect(() => {
-    fetchSiteSettings()
-      .then((data) => setSite(data.settings || { pix_key: '', pix_qr_image: '' }))
-      .catch(() => {});
-  }, []);
-
-  const pixKey = site.pix_key?.trim() || '';
-  const pixQr = site.pix_qr_image?.trim() || '';
+  const pixKey = PIX_KEY;
+  const pixQr = PIX_QR_SRC;
 
   const copyPixKey = async () => {
     if (!pixKey) return;

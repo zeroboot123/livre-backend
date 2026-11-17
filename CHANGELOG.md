@@ -21,9 +21,7 @@ em versões MINOR. A partir de `1.0.0`, mudanças incompatíveis exigem MAJOR.
 - Página **Início** (`/admin/home`) com apresentação do projeto, autor e créditos.
 - Opção **Início** (ícone de casa) no topo do menu principal, responsiva.
 - Seção de apoio ao projeto com doação voluntária via PIX.
-- Área PIX com chave, QR Code, botão de copiar e aviso de contribuição voluntária.
-- Configuração de PIX em **Configurações**, com upload de QR Code e pré-visualização.
-- Tabela `livre_auth.site_settings` e endpoints `GET/PUT /site-settings`.
+- Área PIX com chave fixa definida pelo autor, QR Code, botão de copiar e aviso de contribuição voluntária.
 - Créditos de autoria no README, nos `package.json` e nos arquivos principais.
 
 ## [0.1.0] - 2026-11-17

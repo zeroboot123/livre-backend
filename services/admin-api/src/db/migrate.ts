@@ -250,23 +250,6 @@ export async function runMigrations() {
     )
   `;
 
-  // ── Site settings (singleton: PIX / apoio ao projeto) ───────
-  // Configurável pelo painel; nenhuma integração com gateway de pagamento.
-  await sql`
-    CREATE TABLE IF NOT EXISTS livre_auth.site_settings (
-      id int PRIMARY KEY DEFAULT 1,
-      pix_key text NOT NULL DEFAULT '',
-      pix_qr_image text NOT NULL DEFAULT '',
-      updated_at timestamptz NOT NULL DEFAULT now(),
-      CONSTRAINT site_settings_singleton CHECK (id = 1)
-    )
-  `;
-
-  await sql`
-    INSERT INTO livre_auth.site_settings (id) VALUES (1)
-    ON CONFLICT (id) DO NOTHING
-  `;
-
   // ── Backfill: cifra senhas SMTP legadas (texto puro) ────────
   // Idempotente: só atua em valores que ainda não usam o prefixo enc:v1:.
   const plainPanel = (await sql`
