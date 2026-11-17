@@ -1,11 +1,13 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Loader2, Mail, Save, Send, CheckCircle, AlertCircle } from 'lucide-react';
+import { Loader2, Mail, Save, Send, CheckCircle, AlertCircle, Heart, QrCode, Upload, Trash2 } from 'lucide-react';
 import {
   fetchEmailSettings,
   updateEmailSettings,
   testEmailSettings,
+  fetchSiteSettings,
+  updateSiteSettings,
   type EmailSettingsData,
 } from '@/lib/data-api';
 
@@ -30,6 +32,26 @@ export default function SettingsPage() {
   const [testTo, setTestTo] = useState('');
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  // PIX / apoio ao projeto
+  const [site, setSite] = useState<{ pix_key: string; pix_qr_image: string }>({
+    pix_key: '',
+    pix_qr_image: '',
+  });
+  const [pixSaving, setPixSaving] = useState(false);
+  const [pixSaved, setPixSaved] = useState(false);
+  const [pixError, setPixError] = useState('');
+
+  useEffect(() => {
+    fetchSiteSettings()
+      .then((data) =>
+        setSite({
+          pix_key: data.settings?.pix_key || '',
+          pix_qr_image: data.settings?.pix_qr_image || '',
+        })
+      )
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -94,6 +116,46 @@ export default function SettingsPage() {
       setTestResult({ ok: false, message: err?.message || 'Falha ao enviar email de teste' });
     } finally {
       setTesting(false);
+    }
+  };
+
+  const handleQrFile = (file?: File) => {
+    setPixError('');
+    if (!file) return;
+    if (!/^image\/(png|jpe?g|webp)$/i.test(file.type)) {
+      setPixError('Use uma imagem PNG, JPG ou WebP.');
+      return;
+    }
+    if (file.size > 1.4 * 1024 * 1024) {
+      setPixError('Imagem muito grande (máximo 1,4 MB).');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () =>
+      setSite((prev) => ({ ...prev, pix_qr_image: String(reader.result || '') }));
+    reader.onerror = () => setPixError('Não foi possível ler a imagem.');
+    reader.readAsDataURL(file);
+  };
+
+  const handlePixSave = async () => {
+    setPixSaving(true);
+    setPixSaved(false);
+    setPixError('');
+    try {
+      const result = await updateSiteSettings({
+        pix_key: site.pix_key.trim(),
+        pix_qr_image: site.pix_qr_image.trim(),
+      });
+      setSite({
+        pix_key: result.settings?.pix_key || '',
+        pix_qr_image: result.settings?.pix_qr_image || '',
+      });
+      setPixSaved(true);
+      setTimeout(() => setPixSaved(false), 3000);
+    } catch (err: any) {
+      setPixError(err?.message || 'Erro ao salvar a configuração PIX');
+    } finally {
+      setPixSaving(false);
     }
   };
 
@@ -316,6 +378,120 @@ export default function SettingsPage() {
                 {testResult.message}
               </div>
             )}
+          </div>
+        </div>
+
+        {/* Apoio ao projeto (PIX) */}
+        <div className="rounded-xl border border-slate-200 bg-white">
+          <div className="flex items-center gap-2 border-b border-slate-100 px-6 py-4">
+            <Heart className="h-5 w-5 text-blue-600" />
+            <h2 className="text-lg font-semibold text-slate-800">Apoio ao projeto (PIX)</h2>
+          </div>
+
+          <div className="space-y-5 p-6">
+            <p className="text-sm text-slate-500">
+              Configure a chave PIX exibida na página <strong>Início</strong>. É uma doação
+              voluntária: não há gateway de pagamento nem cobrança automática. Deixe a chave
+              vazia para ocultar a área PIX.
+            </p>
+
+            <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">Chave PIX</label>
+                <input
+                  value={site.pix_key}
+                  onChange={(e) => {
+                    setSite((prev) => ({ ...prev, pix_key: e.target.value }));
+                    setPixSaved(false);
+                    setPixError('');
+                  }}
+                  placeholder="email, telefone, CPF/CNPJ ou chave aleatória"
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/15"
+                />
+                <p className="mt-1 text-xs text-slate-500">
+                  A chave é exibida apenas para administradores e usuários autenticados no painel.
+                </p>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">
+                  QR Code (opcional)
+                </label>
+                <div className="flex items-center gap-3">
+                  {site.pix_qr_image ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={site.pix_qr_image}
+                      alt="Pré-visualização do QR Code PIX"
+                      className="h-20 w-20 rounded-lg border border-slate-200 bg-white object-contain p-1"
+                    />
+                  ) : (
+                    <div className="flex h-20 w-20 items-center justify-center rounded-lg border border-dashed border-slate-300 text-slate-400">
+                      <QrCode className="h-7 w-7" />
+                    </div>
+                  )}
+                  <div className="space-y-2">
+                    <label
+                      htmlFor="pix-qr-upload"
+                      className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                    >
+                      <Upload className="h-4 w-4" />
+                      {site.pix_qr_image ? 'Trocar imagem' : 'Enviar imagem'}
+                    </label>
+                    <input
+                      id="pix-qr-upload"
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      className="hidden"
+                      onChange={(e) => {
+                        handleQrFile(e.target.files?.[0]);
+                        e.target.value = '';
+                      }}
+                    />
+                    {site.pix_qr_image && (
+                      <button
+                        type="button"
+                        onClick={() => setSite((prev) => ({ ...prev, pix_qr_image: '' }))}
+                        className="flex items-center gap-1 text-xs text-red-600 hover:text-red-700"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        Remover QR Code
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <p className="mt-1 text-xs text-slate-500">PNG, JPG ou WebP (até 1,4 MB).</p>
+              </div>
+            </div>
+
+            {pixError && (
+              <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                {pixError}
+              </div>
+            )}
+
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handlePixSave}
+                disabled={pixSaving}
+                className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                {pixSaving ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Save className="h-4 w-4" />
+                )}
+                {pixSaving ? 'Salvando...' : 'Salvar PIX'}
+              </button>
+
+              {pixSaved && (
+                <span className="flex items-center gap-1 text-sm text-green-600">
+                  <CheckCircle className="h-4 w-4" />
+                  Configuração PIX salva!
+                </span>
+              )}
+            </div>
           </div>
         </div>
       </div>

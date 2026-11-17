@@ -14,6 +14,7 @@ Plataforma **Backend as a Service (BaaS)** — própria, modular, leve e segura.
 |---|---|
 | **Versão atual** | [`0.1.0`](VERSION) |
 | **Situação** | 🚧 Em desenvolvimento (série `0.x`) |
+| **Autor** | Anderson — [zeroboot.com.br](https://zeroboot.com.br) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 
 A série `0.x` é de desenvolvimento: a API pode mudar de forma incompatível em
@@ -325,6 +326,13 @@ VPS, não o do GitHub).
 5. Nunca publique versão com falha crítica; nunca execute migração destrutiva
    apenas por causa de uma atualização de versão.
 
-## 📄 Licença
+## 📄 Licença e créditos
 
-Proprietário — Todos os direitos reservados.
+**Autor:** Anderson — [https://zeroboot.com.br](https://zeroboot.com.br)
+
+**Copyright © 2026 Anderson. Todos os direitos reservados**, respeitando as
+licenças de terceiros.
+
+O Livre Backend é distribuído como software proprietário. As bibliotecas,
+imagens e demais dependências de terceiros utilizadas no projeto mantêm suas
+próprias licenças e direitos, que não são alterados por este aviso.

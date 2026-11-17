@@ -1,3 +1,4 @@
+// Livre Backend — © 2026 Anderson · https://zeroboot.com.br
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';

@@ -19,6 +19,7 @@ const menuSections: MenuSection[] = [
   {
     label: 'Principal',
     items: [
+      { label: 'Início', href: '/home', icon: '🏠' },
       { label: 'Dashboard', href: '/dashboard', icon: '📊' },
       { label: 'Database', href: '/projects', icon: '🗄️', match: '/projects' },
     ],

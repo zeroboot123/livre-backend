@@ -1,5 +1,6 @@
 'use client';
 
+// Livre Backend — © 2026 Anderson · https://zeroboot.com.br
 import { AuthProvider, useAuth } from '@/lib/auth-context';
 import { Sidebar, Header } from '@/components/layout/sidebar-layout';
 import { usePathname } from 'next/navigation';

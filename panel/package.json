@@ -1,6 +1,7 @@
 {
   "name": "@livre/admin-panel",
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "author": "Anderson (https://zeroboot.com.br)",
   "private": true,
   "scripts": {
     "dev": "next dev",
