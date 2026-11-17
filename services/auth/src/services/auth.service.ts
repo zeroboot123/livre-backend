@@ -2,7 +2,9 @@ import { sql } from '../db/pool.js';
 import { hashPassword, verifyPassword } from '../utils/password.js';
 import { generateAccessToken, generateRefreshToken, hashToken } from '../utils/crypto.js';
 import { parseDuration } from '../utils/helpers.js';
+import { decryptSecret } from '../utils/secret-box.js';
 import { config } from '../config/index.js';
+import nodemailer from 'nodemailer';
 
 interface RegisterInput {
   email: string;
@@ -13,6 +15,57 @@ interface RegisterInput {
 interface LoginInput {
   email: string;
   password: string;
+}
+
+interface SmtpSettings {
+  smtp_host: string;
+  smtp_port: number;
+  smtp_username: string;
+  smtp_password: string;
+  from_name: string;
+  from_email: string;
+  encryption: string;
+}
+
+// Cria o transporter SMTP a partir das configurações salvas no painel.
+// Mantém o mesmo comportamento do admin-api (inclusive TLS sem validação
+// estrita de certificado), para que ambos os serviços usem o mesmo servidor.
+function createTransporter(settings: SmtpSettings) {
+  const transporterConfig: Record<string, any> = {
+    host: settings.smtp_host,
+    port: Number(settings.smtp_port) || 587,
+  };
+
+  if (settings.encryption === 'ssl') {
+    transporterConfig.secure = true;
+  } else if (settings.encryption === 'tls') {
+    transporterConfig.secure = false;
+    transporterConfig.tls = { rejectUnauthorized: false };
+  } else {
+    transporterConfig.secure = false;
+  }
+
+  if (settings.smtp_username && settings.smtp_password) {
+    transporterConfig.auth = {
+      user: settings.smtp_username,
+      pass: settings.smtp_password,
+    };
+  }
+
+  return nodemailer.createTransport(transporterConfig);
+}
+
+// Formata o remetente, usando apenas o email quando o nome não foi informado.
+function formatFrom(fromName: string, fromEmail: string) {
+  const email = (fromEmail || '').trim();
+  const name = (fromName || '').trim();
+  if (!name) return email;
+  return `"${name}" <${email}>`;
+}
+
+// Link de redefinição de senha (rota do painel).
+function buildResetUrl(token: string) {
+  return `${config.publicUrl.replace(/\/+$/, '')}/admin/reset-password?token=${token}`;
 }
 
 // Status de instalação: true enquanto não existir nenhum usuário.
@@ -188,48 +241,56 @@ export async function login(input: LoginInput) {
 export async function refresh(refreshToken: string) {
   const tokenHash = await hashToken(refreshToken);
 
-  const [session] = await sql`
-    SELECT s.id, s.user_id, s.revoked, s.expires_at, u.email, u.active, u.blocked
-    FROM livre_auth.sessions s
-    JOIN livre_auth.users u ON u.id = s.user_id
-    WHERE s.refresh_token_hash = ${tokenHash}
-  `;
+  // Usa transação com FOR UPDATE para evitar race condition:
+  // duas requisições simultâneas com o mesmo refresh token não podem
+  // ambas criar uma nova sessão válida.
+  const result = await sql.begin(async (tx) => {
+    const [session] = await tx`
+      SELECT s.id, s.user_id, s.revoked, s.expires_at, u.email, u.active, u.blocked
+      FROM livre_auth.sessions s
+      JOIN livre_auth.users u ON u.id = s.user_id
+      WHERE s.refresh_token_hash = ${tokenHash}
+      FOR UPDATE
+    `;
 
-  if (!session || session.revoked || session.expires_at < new Date()) {
-    throw new Error('Refresh token inválido ou expirado');
-  }
+    if (!session || session.revoked || session.expires_at < new Date()) {
+      throw new Error('Refresh token inválido ou expirado');
+    }
 
-  if (!session.active || session.blocked) {
-    // Revogar sessão se usuário estiver bloqueado
-    await sql`UPDATE livre_auth.sessions SET revoked = TRUE WHERE id = ${session.id}`;
-    throw new Error('Usuário bloqueado ou desativado');
-  }
+    if (!session.active || session.blocked) {
+      // Revogar sessão se usuário estiver bloqueado
+      await tx`UPDATE livre_auth.sessions SET revoked = TRUE WHERE id = ${session.id}`;
+      throw new Error('Usuário bloqueado ou desativado');
+    }
 
-  // Revogar token antigo (rotação)
-  await sql`UPDATE livre_auth.sessions SET revoked = TRUE WHERE id = ${session.id}`;
+    // Revogar token antigo (rotação)
+    await tx`UPDATE livre_auth.sessions SET revoked = TRUE WHERE id = ${session.id}`;
 
-  // Gerar novos tokens
-  const newAccessToken = await generateAccessToken({
-    sub: session.user_id,
-    email: session.email,
-    role: 'user',
+    // Gerar novos tokens
+    const newAccessToken = await generateAccessToken({
+      sub: session.user_id,
+      email: session.email,
+      role: 'user',
+    });
+
+    const newRefreshToken = await generateRefreshToken();
+    const newRefreshTokenHash = await hashToken(newRefreshToken);
+    const expiresAt = new Date(Date.now() + parseDuration(config.jwt.refreshExpiration) * 1000);
+
+    await tx`
+      INSERT INTO livre_auth.sessions (user_id, refresh_token_hash, expires_at)
+      VALUES (${session.user_id}, ${newRefreshTokenHash}, ${expiresAt})
+    `;
+
+    return {
+      access_token: newAccessToken,
+      refresh_token: newRefreshToken,
+      expires_in: parseDuration(config.jwt.expiration),
+      token_type: 'Bearer',
+    };
   });
 
-  const newRefreshToken = await generateRefreshToken();
-  const newRefreshTokenHash = await hashToken(newRefreshToken);
-  const expiresAt = new Date(Date.now() + parseDuration(config.jwt.refreshExpiration) * 1000);
-
-  await sql`
-    INSERT INTO livre_auth.sessions (user_id, refresh_token_hash, expires_at)
-    VALUES (${session.user_id}, ${newRefreshTokenHash}, ${expiresAt})
-  `;
-
-  return {
-    access_token: newAccessToken,
-    refresh_token: newRefreshToken,
-    expires_in: parseDuration(config.jwt.expiration),
-    token_type: 'Bearer',
-  };
+  return result;
 }
 
 // Logout (revogar refresh token)
@@ -259,8 +320,53 @@ export async function forgotPassword(email: string) {
     VALUES (${user.id}, ${resetToken}, ${expiresAt})
   `;
 
-  // TODO: Enviar email com link de recuperação
-  console.log(`🔗 Link de recuperação para ${email}: /reset-password?token=${resetToken}`);
+  try {
+    const [settings] = await sql`
+      SELECT * FROM livre_auth.email_settings WHERE id = 1
+    `;
+
+    if (!settings || !settings.smtp_host) {
+      console.warn(
+        `[forgot-password] SMTP do painel não configurado em livre_auth.email_settings. ` +
+        `Configure em /admin/settings. Link de fallback: ${buildResetUrl(resetToken)}`
+      );
+      return;
+    }
+
+    const transporter = createTransporter({
+      smtp_host: settings.smtp_host,
+      smtp_port: settings.smtp_port,
+      smtp_username: settings.smtp_username,
+      smtp_password: decryptSecret(settings.smtp_password || ''),
+      from_name: settings.from_name,
+      from_email: settings.from_email,
+      encryption: settings.encryption,
+    });
+
+    const resetUrl = buildResetUrl(resetToken);
+
+    const info = await transporter.sendMail({
+      from: formatFrom(settings.from_name, settings.from_email),
+      to: email,
+      subject: 'Recuperação de senha - Livre Backend',
+      html: `
+        <p>Clique no link abaixo para redefinir sua senha:</p>
+        <p><a href="${resetUrl}">${resetUrl}</a></p>
+        <p>Este link expira em 1 hora.</p>
+      `,
+    });
+
+    console.log(
+      `[forgot-password] Email de recuperação enviado para ${email} ` +
+      `(messageId=${info.messageId || 'n/a'})`
+    );
+  } catch (err: any) {
+    console.error(
+      `[forgot-password] Falha ao enviar email de recuperação para ${email}: ` +
+      `${err?.message || err}`
+    );
+    if (err?.code) console.error(`[forgot-password] Código de erro SMTP: ${err.code}`);
+  }
 }
 
 // Reset password

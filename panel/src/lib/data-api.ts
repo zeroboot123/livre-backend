@@ -290,6 +290,15 @@ export async function exportProjectSchema(): Promise<{ filename: string; sql: st
   return { filename: data.filename, sql: data.sql };
 }
 
+/** Apaga todos os data types/dados do projeto e recria apenas a estrutura nativa. */
+export async function resetProjectSchema(password: string): Promise<{ schema: string }> {
+  const data = await apiFetch('/schema/reset', {
+    method: 'POST',
+    body: JSON.stringify({ password }),
+  });
+  return { schema: data.schema };
+}
+
 // ============================================================
 // File manager
 // ============================================================
@@ -467,6 +476,38 @@ export async function setExposedTables(tables: string[]): Promise<string[]> {
   return data.exposedTables ?? [];
 }
 
+// ============================================================
+// RPC (allowlist de funções expostas na API pública)
+// ============================================================
+export interface RpcFunction {
+  name: string;
+  args: string;
+  returns: string;
+  security_definer: boolean;
+  arg_count: number;
+  /** Elegível para RPC: não é SECURITY DEFINER e recebe 1 argumento. */
+  eligible: boolean;
+  /** Já está liberada para execução via API. */
+  allowed: boolean;
+}
+
+export interface RpcFunctionsResponse {
+  allowed: string[];
+  functions: RpcFunction[];
+}
+
+export async function fetchRpcFunctions(): Promise<RpcFunctionsResponse> {
+  return apiFetch('/rpc-functions');
+}
+
+export async function allowRpcFunction(name: string): Promise<void> {
+  await apiFetch(`/rpc-functions/${encodeURIComponent(name)}`, { method: 'POST' });
+}
+
+export async function revokeRpcFunction(name: string): Promise<void> {
+  await apiFetch(`/rpc-functions/${encodeURIComponent(name)}`, { method: 'DELETE' });
+}
+
 export async function createApiToken(
   name: string
 ): Promise<{ token: string; apiToken: ApiToken }> {
@@ -517,4 +558,64 @@ export async function deleteRlsRule(id: string) {
 
 export async function makeTablePublic(table: string) {
   return apiFetch(`/rls/${encodeURIComponent(table)}/public`, { method: 'POST' });
+}
+
+// ============================================================
+// Email settings
+// ============================================================
+export interface EmailSettingsData {
+  smtp_host: string;
+  smtp_port: number;
+  smtp_username: string;
+  /** Senha em claro — usada apenas em requisições (nunca vem do GET). */
+  smtp_password?: string;
+  /** Indica se há senha salva no backend; a senha real nunca é retornada. */
+  smtp_password_configured?: boolean;
+  from_name: string;
+  from_email: string;
+  encryption: string;
+}
+
+export async function fetchEmailSettings(): Promise<{ settings: EmailSettingsData | null }> {
+  return apiFetch('/email-settings');
+}
+
+export async function updateEmailSettings(
+  data: Partial<EmailSettingsData>
+): Promise<{ settings: EmailSettingsData }> {
+  return apiFetch('/email-settings', {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function testEmailSettings(
+  data: EmailSettingsData & { to: string }
+): Promise<{ ok: boolean; message: string }> {
+  return apiFetch('/email-settings/test', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function fetchProjectEmailSettings(): Promise<{ settings: EmailSettingsData | null }> {
+  return apiFetch('/email-settings/project');
+}
+
+export async function updateProjectEmailSettings(
+  data: Partial<EmailSettingsData>
+): Promise<{ settings: EmailSettingsData }> {
+  return apiFetch('/email-settings/project', {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function testProjectEmailSettings(
+  to: string
+): Promise<{ ok: boolean; message: string }> {
+  return apiFetch('/email-settings/project/test', {
+    method: 'POST',
+    body: JSON.stringify({ to }),
+  });
 }

@@ -2,7 +2,7 @@
 # LIVRE BACKEND - Makefile
 # ==============================================================
 
-.PHONY: help up down build logs psql migrate backup restore
+.PHONY: help up down build logs psql migrate backup restore version version-check release
 
 help:
 	@echo "┌─────────────────────────────────────────────┐"
@@ -16,6 +16,8 @@ help:
 	@echo "│  make backup   - Executar backup manual      │"
 	@echo "│  make restore  - Restaurar backup            │"
 	@echo "│  make migrate  - Executar migrações          │"
+	@echo "│  make version  - Mostrar versão atual        │"
+	@echo "│  make release  - Planejar release (dry-run)  │"
 	@echo "└─────────────────────────────────────────────┘"
 
 # Iniciar serviços
@@ -55,3 +57,15 @@ migrate:
 	@echo "Executando migrações..."
 	cat ./docker/postgres/init.sql | docker compose exec -T postgres psql -U ${DB_SUPERUSER} livre_backend
 	@echo "✅ Migrações concluídas!"
+
+# Versão atual
+version:
+	@./scripts/version.sh show
+
+# Valida a sincronização da versão
+version-check:
+	@./scripts/version.sh check
+
+# Planeja a release (não altera nada)
+release:
+	@./scripts/release.sh

@@ -16,14 +16,18 @@ import { Toast, type ToastKind } from '@/components/ui/Toast';
 import { apiFetch } from '@/lib/api-client';
 import { getActiveProjectId } from '@/lib/projects';
 import {
+  allowRpcFunction,
   createApiToken,
   fetchApiSettings,
+  fetchRpcFunctions,
   publicApiBase,
   revokeApiToken,
+  revokeRpcFunction,
   setExposedTables,
   updateApiSettings,
   type ApiSettings,
   type ApiToken,
+  type RpcFunction,
 } from '@/lib/data-api';
 
 function ApiInner() {
@@ -32,6 +36,7 @@ function ApiInner() {
   const [settings, setSettings] = useState<ApiSettings | null>(null);
   const [exposed, setExposed] = useState<string[]>([]);
   const [tokens, setTokens] = useState<ApiToken[]>([]);
+  const [rpcFunctions, setRpcFunctions] = useState<RpcFunction[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [bannerOpen, setBannerOpen] = useState(true);
@@ -57,6 +62,13 @@ function ApiInner() {
       setSettings(res.settings);
       setExposed(res.exposedTables);
       setTokens(res.tokens);
+      // A lista de funções RPC é opcional: se falhar, a tela continua funcionando.
+      try {
+        const rpc = await fetchRpcFunctions();
+        setRpcFunctions(rpc.functions || []);
+      } catch {
+        setRpcFunctions([]);
+      }
     } catch (err: any) {
       setError(err?.message || 'Erro ao carregar configurações da API');
     } finally {
@@ -110,6 +122,26 @@ function ApiInner() {
       setExposed(saved);
     } catch (err: any) {
       notify(err?.message || 'Erro ao salvar tabelas expostas', 'error');
+      load();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleRpcFunction = async (fn: RpcFunction) => {
+    setSaving(true);
+    try {
+      if (fn.allowed) {
+        await revokeRpcFunction(fn.name);
+        setRpcFunctions((cur) => cur.map((f) => (f.name === fn.name ? { ...f, allowed: false } : f)));
+        notify(`Função "${fn.name}" removida da allowlist`);
+      } else {
+        await allowRpcFunction(fn.name);
+        setRpcFunctions((cur) => cur.map((f) => (f.name === fn.name ? { ...f, allowed: true } : f)));
+        notify(`Função "${fn.name}" liberada via RPC`);
+      }
+    } catch (err: any) {
+      notify(err?.message || 'Erro ao alterar a allowlist de RPC', 'error');
       load();
     } finally {
       setSaving(false);
@@ -343,7 +375,76 @@ function ApiInner() {
 
           <hr className="border-slate-200" />
 
-          {/* Autenticação nativa do projeto */}
+          {/* RPC — allowlist de funções */}
+          <div>
+            <h2 className="mb-1 text-[15px] font-semibold text-slate-800">RPC (funções do projeto)</h2>
+            <p className="mb-3 text-[11px] text-slate-500">
+              Libere funções <b>SECURITY INVOKER</b> do schema do projeto para serem executadas via{' '}
+              <code className="rounded bg-slate-100 px-1">POST /public/rpc/função</code>. A função
+              deve receber um único argumento <code className="rounded bg-slate-100 px-1">payload jsonb</code>.
+              A execução respeita o RLS e o contexto do token.
+            </p>
+
+            {!rpcFunctions.length ? (
+              <p className="text-[11px] text-slate-400">
+                Nenhuma função encontrada no schema do projeto. Crie uma pelo editor SQL, por exemplo:
+                <code className="ml-1 rounded bg-slate-100 px-1">
+                  CREATE FUNCTION minha_funcao(payload jsonb) RETURNS jsonb ...
+                </code>
+              </p>
+            ) : (
+              <div className="overflow-hidden rounded border border-slate-300 bg-white">
+                <table className="w-full text-left text-[12px]">
+                  <thead>
+                    <tr className="border-b border-slate-300 bg-[#F3F4F6] text-slate-600">
+                      <th className="px-3 py-1.5 font-semibold">Função</th>
+                      <th className="px-3 py-1.5 font-semibold">Assinatura</th>
+                      <th className="px-3 py-1.5 font-semibold">Retorna</th>
+                      <th className="px-3 py-1.5 font-semibold">Exposta</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rpcFunctions.map((fn) => (
+                      <tr key={fn.name} className="border-b border-slate-100 last:border-0">
+                        <td className="px-3 py-1.5 font-medium text-slate-700">{fn.name}</td>
+                        <td className="px-3 py-1.5 font-mono text-[11px] text-slate-500">{fn.args}</td>
+                        <td className="px-3 py-1.5 font-mono text-[11px] text-slate-500">{fn.returns}</td>
+                        <td className="px-3 py-1.5">
+                          {fn.eligible ? (
+                            <label className="flex items-center gap-2">
+                              <input
+                                type="checkbox"
+                                checked={fn.allowed}
+                                disabled={saving}
+                                onChange={() => toggleRpcFunction(fn)}
+                                className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600"
+                              />
+                              <span className="text-[11px] text-slate-600">
+                                {fn.allowed ? 'liberada' : 'bloqueada'}
+                              </span>
+                            </label>
+                          ) : (
+                            <span
+                              className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700"
+                              title={
+                                fn.security_definer
+                                  ? 'SECURITY DEFINER não pode ser exposta via RPC'
+                                  : 'A função precisa receber exatamente 1 argumento (payload jsonb)'
+                              }
+                            >
+                              não elegível
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          <hr className="border-slate-200" />
           <div>
             <h2 className="mb-1 text-[15px] font-semibold text-slate-800">Authentication API</h2>
             <p className="mb-3 text-[11px] text-slate-500">

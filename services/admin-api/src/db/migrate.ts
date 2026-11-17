@@ -1,5 +1,6 @@
 import { sql } from './pool.js';
 import { ensureProjectSchema } from './project-schema.js';
+import { encryptSecret } from '../utils/secret-box.js';
 
 /**
  * Migrações idempotentes aplicadas na inicialização do admin-api.
@@ -182,6 +183,45 @@ export async function runMigrations() {
     )
   `;
 
+  // ── Allowlist de funções RPC expostas na API pública ───────
+  // Só funções explicitamente liberadas podem ser executadas por um token.
+  await sql`
+    CREATE TABLE IF NOT EXISTS livre_auth.project_rpc_allowed (
+      project_id   uuid NOT NULL REFERENCES livre_auth.projects(id) ON DELETE CASCADE,
+      function_name text NOT NULL,
+      created_at   timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (project_id, function_name)
+    )
+  `;
+
+  // Atalho para consultar a allowlist do projeto a partir do token da API.
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_project_rpc_allowed_project
+      ON livre_auth.project_rpc_allowed (project_id)
+  `;
+
+  // ── Tabela de chaves de idempotência ───────────────────────────
+  // Permite que clientes evitem duplicação em retentativas de rede.
+  await sql`
+    CREATE TABLE IF NOT EXISTS livre_auth.idempotency_keys (
+      id             uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+      project_id     uuid NOT NULL REFERENCES livre_auth.projects(id) ON DELETE CASCADE,
+      key            text NOT NULL,
+      endpoint       text NOT NULL,
+      request_hash   text NOT NULL,
+      status         text NOT NULL DEFAULT 'in_progress',
+      response       jsonb,
+      created_at     timestamptz NOT NULL DEFAULT now(),
+      completed_at   timestamptz,
+      UNIQUE (project_id, key)
+    )
+  `;
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_idempotency_keys_project
+      ON livre_auth.idempotency_keys (project_id)
+  `;
+
   // ── SQL migrations (arquivos .sql enviados pelo painel) ────
   await sql`
     CREATE TABLE IF NOT EXISTS livre_auth.sql_migrations (
@@ -211,6 +251,69 @@ export async function runMigrations() {
       ON livre_auth.sql_migrations(project_id, filename)
       WHERE status = 'success'
   `;
+
+  // ── Email settings (panel-level, singleton) ──────────────────
+  await sql`
+    CREATE TABLE IF NOT EXISTS livre_auth.email_settings (
+      id int PRIMARY KEY DEFAULT 1,
+      smtp_host text NOT NULL DEFAULT '',
+      smtp_port integer NOT NULL DEFAULT 587,
+      smtp_username text NOT NULL DEFAULT '',
+      smtp_password text NOT NULL DEFAULT '',
+      from_name text NOT NULL DEFAULT '',
+      from_email text NOT NULL DEFAULT '',
+      encryption text NOT NULL DEFAULT 'tls',
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT email_settings_singleton CHECK (id = 1)
+    )
+  `;
+
+  await sql`
+    INSERT INTO livre_auth.email_settings (id) VALUES (1)
+    ON CONFLICT (id) DO NOTHING
+  `;
+
+  // Per-project email settings
+  await sql`
+    CREATE TABLE IF NOT EXISTS livre_auth.project_email_settings (
+      id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+      project_id uuid UNIQUE NOT NULL REFERENCES livre_auth.projects(id) ON DELETE CASCADE,
+      smtp_host text NOT NULL DEFAULT '',
+      smtp_port integer NOT NULL DEFAULT 587,
+      smtp_username text NOT NULL DEFAULT '',
+      smtp_password text NOT NULL DEFAULT '',
+      from_name text NOT NULL DEFAULT '',
+      from_email text NOT NULL DEFAULT '',
+      encryption text NOT NULL DEFAULT 'tls',
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+
+  // ── Backfill: cifra senhas SMTP legadas (texto puro) ────────
+  // Idempotente: só atua em valores que ainda não usam o prefixo enc:v1:.
+  const plainPanel = (await sql`
+    SELECT id, smtp_password FROM livre_auth.email_settings
+    WHERE smtp_password <> '' AND smtp_password NOT LIKE 'enc:v1:%'
+  `) as any[];
+  for (const row of plainPanel) {
+    await sql`
+      UPDATE livre_auth.email_settings
+      SET smtp_password = ${encryptSecret(row.smtp_password)}
+      WHERE id = ${row.id}
+    `;
+  }
+
+  const plainProjects = (await sql`
+    SELECT id, smtp_password FROM livre_auth.project_email_settings
+    WHERE smtp_password <> '' AND smtp_password NOT LIKE 'enc:v1:%'
+  `) as any[];
+  for (const row of plainProjects) {
+    await sql`
+      UPDATE livre_auth.project_email_settings
+      SET smtp_password = ${encryptSecret(row.smtp_password)}
+      WHERE id = ${row.id}
+    `;
+  }
 
   // ── Backfill: garante um schema para projetos antigos ───────
   const sanitize = (value: string) => {
@@ -255,4 +358,35 @@ export async function runMigrations() {
     // Também adiciona os campos embutidos às tabelas existentes.
     await ensureProjectSchema(schemaName);
   }
+
+  // ── Fase 5: tabela de tasks (fila de execução) ────────────────
+  await sql`
+    CREATE TABLE IF NOT EXISTS libre_auth.tasks (
+      id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+      project_id uuid NOT NULL REFERENCES libre_auth.projects(id) ON DELETE CASCADE,
+      name text NOT NULL,
+      payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+      context_user_id uuid,
+      context_tenant_id uuid,
+      status text NOT NULL DEFAULT 'pending',
+      attempts int NOT NULL DEFAULT 0,
+      max_attempts int NOT NULL DEFAULT 3,
+      last_error text,
+      run_at timestamptz NOT NULL DEFAULT now(),
+      locked_until timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_tasks_pending
+      ON libre_auth.tasks (status, run_at)
+      WHERE status = 'pending'
+  `;
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_tasks_project_status
+      ON libre_auth.tasks (project_id, status)
+  `;
 }

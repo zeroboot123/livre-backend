@@ -124,6 +124,8 @@ services:
       ARGON2_TIME_COST: ${ARGON2_TIME_COST:-2}
       ARGON2_MEMORY_COST: ${ARGON2_MEMORY_COST:-19456}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      # Chave (fora do banco) para cifrar a senha SMTP em repouso (AES-256-GCM).
+      EMAIL_ENCRYPTION_KEY: ${EMAIL_ENCRYPTION_KEY:-}
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.livre-auth.rule=Host(`${DOMAIN:-api.livrebackend.com.br}`) && PathPrefix(`/auth`)"
@@ -177,6 +179,8 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       MAX_UPLOAD_MB: 25
+      # Chave (fora do banco) para cifrar a senha SMTP em repouso (AES-256-GCM).
+      EMAIL_ENCRYPTION_KEY: ${EMAIL_ENCRYPTION_KEY:-}
     volumes:
       - ./backups:/backups:rw
     labels:
@@ -193,6 +197,36 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ==============================================================
+  # Worker - Fila de tarefas (Postgres, FOR UPDATE SKIP LOCKED)
+  # ==============================================================
+  worker:
+    build:
+      context: ./services/worker
+      dockerfile: Dockerfile
+    container_name: livre-worker
+    restart: unless-stopped
+    networks:
+      - livre_backend_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://${DB_SUPERUSER}:${DB_SUPERPASS}@postgres:5432/livre_backend
+      WORKER_POLL_INTERVAL_MS: 5000
+      WORKER_TASK_TIMEOUT_MS: 30000
+      WORKER_AUTO_START: "1"
     deploy:
       resources:
         limits:

@@ -352,8 +352,7 @@ function AppDataInner() {
       <div className="shrink-0 bg-white px-4 pb-2 pt-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h1 className="text-[13px] text-slate-700">
-            Application data - All <span className="font-semibold text-slate-900">{selected || '…'}</span> -
-            Development version
+            Application data - All <span className="font-semibold text-slate-900">{selected || '…'}</span>
           </h1>
         </div>
       </div>

@@ -1,5 +1,6 @@
 'use client';
 
+// Livre Backend — © 2026 Anderson · https://zeroboot.com.br
 import { AuthProvider, useAuth } from '@/lib/auth-context';
 import { Sidebar, Header } from '@/components/layout/sidebar-layout';
 import { usePathname } from 'next/navigation';
@@ -9,7 +10,7 @@ import logo from '@/../public/logo-mark.png';
 import '../styles/globals.css';
 
 // usePathname() returns paths WITHOUT the basePath ('/admin') prefix.
-const publicPaths = ['/', '/login', '/register', '/forgot-password'];
+const publicPaths = ['/', '/login', '/register', '/forgot-password', '/reset-password'];
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -56,7 +57,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-[#F8FAFC]">
       <Sidebar collapsed={collapsed} onToggle={() => setSidebarCollapsed(!sidebarCollapsed)} />
       <Header collapsed={collapsed} />
-      <main className={`pt-14 sidebar-transition ${collapsed ? 'pl-16' : 'pl-60'}`}>
+      <main className={`pt-14 sidebar-transition ${collapsed ? 'pl-16' : 'pl-60'} h-screen overflow-y-auto`}>
         <div className="p-6">
           {children}
         </div>

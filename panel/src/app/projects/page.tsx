@@ -25,6 +25,7 @@ export default function ProjectsPage() {
   const [notice, setNotice] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
   const [deleteError, setDeleteError] = useState('');
+  const [deletePassword, setDeletePassword] = useState('');
   const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(async () => {
@@ -95,15 +96,19 @@ export default function ProjectsPage() {
 
   const openDelete = (project: Project) => {
     setDeleteError('');
+    setDeletePassword('');
     setDeleteTarget(project);
   };
 
   const deleteProject = async () => {
-    if (!deleteTarget) return;
+    if (!deleteTarget || !deletePassword.trim()) return;
     setDeleting(true);
     setDeleteError('');
     try {
-      await apiFetch(`/projects/${deleteTarget.id}`, { method: 'DELETE' });
+      await apiFetch(`/projects/${deleteTarget.id}`, {
+        method: 'DELETE',
+        body: JSON.stringify({ password: deletePassword }),
+      });
       const wasActive = deleteTarget.id === getActiveProjectId();
       setProjects((prev) => prev.filter((p) => p.id !== deleteTarget.id));
       if (wasActive) {
@@ -113,6 +118,7 @@ export default function ProjectsPage() {
       }
       setNotice(`Projeto "${deleteTarget.name}" excluído com sucesso.`);
       setDeleteTarget(null);
+      setDeletePassword('');
     } catch (err: any) {
       setDeleteError(err?.message || 'Erro ao excluir projeto');
     } finally {
@@ -315,6 +321,21 @@ export default function ProjectsPage() {
             </p>
           )}
 
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-700">
+              Digite a senha do administrador para confirmar
+            </label>
+            <input
+              type="password"
+              value={deletePassword}
+              onChange={(e) => setDeletePassword(e.target.value)}
+              autoFocus
+              autoComplete="current-password"
+              placeholder="Senha do administrador"
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-red-500 focus:outline-none"
+            />
+          </div>
+
           {deleteError && (
             <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
               {deleteError}
@@ -331,7 +352,7 @@ export default function ProjectsPage() {
             </button>
             <button
               onClick={deleteProject}
-              disabled={deleting}
+              disabled={deleting || !deletePassword.trim()}
               className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
             >
               <Trash2 className="h-4 w-4" />

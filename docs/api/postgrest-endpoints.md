@@ -1,5 +1,12 @@
 # API REST (PostgREST)
 
+> **Atenção:** esta rota (`/api/rest`) aponta para o schema `public` do
+> PostgreSQL, que **não contém** as tabelas dos projetos. Os dados de cada
+> projeto ficam em schemas isolados (`proj_*`) e são servidos pela API em
+> `/admin/api/public/:table`, documentada em
+> [`public-api.md`](public-api.md). Esta página permanece como referência do
+> PostgREST disponível na plataforma.
+
 ## Base URL
 
 ```

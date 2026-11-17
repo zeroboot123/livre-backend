@@ -188,7 +188,9 @@ const FORBIDDEN: Array<{ re: RegExp; message: string }> = [
     message: 'Alterar ou excluir schemas não é permitido. Use o painel para excluir um projeto.',
   },
   {
-    re: /\b(begin|start\s+transaction|commit|rollback|savepoint)\b/i,
+    // Só bloqueia quando o comando É de controle de transação. Blocos
+    // PL/pgSQL (DO $$ BEGIN ... END $$) contêm BEGIN no meio e são válidos.
+    re: /^(begin|start\s+transaction|commit|rollback|savepoint)\b/i,
     message:
       'Controle de transação não é permitido: cada arquivo já é executado dentro de uma transação.',
   },
@@ -227,8 +229,24 @@ function stripComments(statement: string): string {
   return statement.replace(/--[^\n]*/g, ' ').replace(/\/\*[\s\S]*?\*\//g, ' ');
 }
 
+/**
+ * Prepara os comandos para execução. Dumps externos costumam vir com
+ * `CREATE SCHEMA <origem>` e `SET search_path TO <origem>, public` no topo;
+ * esses comandos são descartados para que tudo seja criado no schema do
+ * projeto ativo (cada projeto tem um schema dedicado).
+ */
+export function prepareStatements(input: string): string[] {
+  return splitSqlStatements(input).filter((statement) => {
+    const audit = stripComments(statement).trim();
+    if (!audit || audit === ';') return false;
+    if (/^create\s+schema\b/i.test(audit)) return false;
+    if (/^set\s+(local\s+|session\s+)?search_path\b/i.test(audit)) return false;
+    return true;
+  });
+}
+
 function assertSafeStatement(statement: string, schema: string) {
-  const audit = stripComments(statement);
+  const audit = stripComments(statement).trim();
 
   for (const rule of FORBIDDEN) {
     if (rule.re.test(audit)) throw new Error(rule.message);
@@ -307,7 +325,7 @@ export async function executeSqlMigration(
     throw new Error('O arquivo SQL excede o limite de 1 MB.');
   }
 
-  const statements = splitSqlStatements(text);
+  const statements = prepareStatements(text);
   if (!statements.length) throw new Error('Nenhum comando SQL encontrado no arquivo.');
 
   statements.forEach((statement) => assertSafeStatement(statement, ctx.schema));

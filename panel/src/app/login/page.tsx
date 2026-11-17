@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useAuth } from '@/lib/auth-context';
+import { APP_VERSION } from '@/lib/version';
 import Link from 'next/link';
 import Image from 'next/image';
 import logo from '@/../public/logo-mark.png';
@@ -44,8 +45,7 @@ export default function LoginPage() {
         {/* Logo & Title */}
         <div className="text-center mb-8">
           <Image src={logo} alt="Livre Backend" className="mx-auto mb-4 h-24 w-auto" />
-          <h1 className="text-2xl font-bold text-[#0F172A]">Bem-vindo ao Livre Backend</h1>
-          <p className="text-sm text-[#64748B] mt-1">Acesse sua plataforma de gerenciamento</p>
+          <p className="text-sm text-[#64748B]">Acesse sua plataforma de gerenciamento</p>
         </div>
 
         {/* Card */}
@@ -148,6 +148,7 @@ export default function LoginPage() {
             <>Livre Backend &copy; {new Date().getFullYear()}</>
           )}
         </p>
+        <p className="text-center text-xs text-[#94A3B8] mt-1">Versão {APP_VERSION}</p>
       </div>
     </div>
   );

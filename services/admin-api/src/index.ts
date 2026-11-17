@@ -1,3 +1,4 @@
+// Livre Backend — © 2026 Anderson · https://zeroboot.com.br
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
@@ -9,8 +10,14 @@ import {
 } from '@aws-sdk/client-s3';
 import { sql } from './db/pool.js';
 import { signToken, verifyToken } from './utils/crypto.js';
-import { hashPassword, verifyPassword } from './utils/password.js';
-import { BUILTIN_FIELDS, USER_BUILTIN_FIELDS, ensureProjectSchema } from './db/project-schema.js';
+import { decryptSecret, encryptSecret, normalizeIncomingPassword } from './utils/secret-box.js';
+import { hashPassword, verifyPassword, verifyAdminPassword } from './utils/password.js';
+import {
+  getPanelEmailSettingsRow,
+  getProjectEmailSettingsRow,
+  toPublicEmailSettings,
+} from './services/email.js';
+import { BUILTIN_FIELDS, USER_BUILTIN_FIELDS, ensureProjectSchema, resetProjectSchema } from './db/project-schema.js';
 import { runMigrations } from './db/migrate.js';
 import {
   deleteMigration,
@@ -26,6 +33,21 @@ import {
   isAllowedMime,
   s3,
 } from './services/storage.js';
+import {
+  QueryError,
+  countModeFromHeader,
+  nextCursorFromRow,
+  parseListQuery,
+  type ColumnMeta,
+} from './services/public-query.js';
+import {
+  RpcError,
+  assertRpcCallable,
+  buildRpcCall,
+  isValidFunctionName,
+  parseBatchOperations,
+} from './services/rpc.js';
+import { withIdempotency, IdempotencyError } from './services/idempotency.js';
 
 const app = Fastify({
   logger: false,
@@ -66,6 +88,22 @@ app.addHook('preHandler', async (request, reply) => {
   }
 });
 
+/**
+ * Confere a senha do administrador logado (dono do token do painel).
+ * Usada como confirmação em operações destrutivas (reset/exclusão de projeto).
+ */
+async function confirmAdminPassword(request: any, password: unknown): Promise<boolean> {
+  const value = String(password ?? '');
+  const userId = (request as any).user?.sub;
+  if (!value || !userId) return false;
+
+  const [admin] = (await sql`
+    SELECT password_hash FROM livre_auth.users WHERE id = ${userId} LIMIT 1
+  `) as any[];
+
+  return verifyAdminPassword(value, admin?.password_hash);
+}
+
 // Health
 app.get('/health', async () => ({
   status: 'ok', service: 'admin-api', timestamp: new Date().toISOString()
@@ -77,6 +115,145 @@ app.get('/stats', async (request) => {
   const [users] = await sql`SELECT COUNT(*)::int as count FROM livre_auth.users`;
   const [sessions] = await sql`SELECT COUNT(*)::int as count FROM livre_auth.sessions WHERE revoked = FALSE AND expires_at > NOW()`;
   return { projects: projects.count, users: users.count, sessions: sessions.count };
+});
+
+// ============================================================
+// EMAIL SETTINGS
+// ============================================================
+
+// GET panel-level email settings
+// A senha SMTP nunca é devolvida; apenas o indicador smtp_password_configured.
+app.get('/email-settings', async (request: any, reply) => {
+  const row = await getPanelEmailSettingsRow();
+  return { settings: toPublicEmailSettings(row) };
+});
+
+// PUT panel-level email settings
+// A senha só é alterada quando um valor novo (não vazio e não máscara) é enviado.
+app.put('/email-settings', async (request: any, reply) => {
+  const body = request.body || {};
+  // postgres.js não aceita `undefined`: campos ausentes viram NULL (COALESCE preserva).
+  const nullable = <T,>(v: T | undefined): T | null => (v === undefined ? null : v);
+  const smtp_host = nullable(body.smtp_host);
+  const smtp_port = nullable(body.smtp_port);
+  const smtp_username = nullable(body.smtp_username);
+  const from_name = nullable(body.from_name);
+  const from_email = nullable(body.from_email);
+  const encryption = nullable(body.encryption);
+  const newPassword = normalizeIncomingPassword(body.smtp_password);
+  const encryptedPassword = newPassword === null ? null : encryptSecret(newPassword);
+
+  await sql`
+    UPDATE livre_auth.email_settings SET
+      smtp_host = COALESCE(${smtp_host}, smtp_host),
+      smtp_port = COALESCE(${smtp_port}, smtp_port),
+      smtp_username = COALESCE(${smtp_username}, smtp_username),
+      smtp_password = COALESCE(${encryptedPassword}, smtp_password),
+      from_name = COALESCE(${from_name}, from_name),
+      from_email = COALESCE(${from_email}, from_email),
+      encryption = COALESCE(${encryption}, encryption),
+      updated_at = NOW()
+    WHERE id = 1
+  `;
+
+  const row = await getPanelEmailSettingsRow();
+  return { settings: toPublicEmailSettings(row) };
+});
+
+// POST test email (panel-level)
+app.post('/email-settings/test', async (request: any, reply) => {
+  const body = request.body || {};
+  const { to } = body;
+  if (!to) {
+    return reply.code(400).send({ error: 'Destinatário é obrigatório' });
+  }
+
+  // Senha em branco => usa a credencial já salva (permite testar sem redigitar).
+  const stored = await getPanelEmailSettingsRow();
+  const incomingPassword = normalizeIncomingPassword(body.smtp_password);
+  const password = incomingPassword ?? decryptSecret(stored?.smtp_password || '');
+
+  const smtp_host = body.smtp_host || stored?.smtp_host || '';
+  if (!smtp_host) {
+    return reply.code(400).send({ error: 'Servidor SMTP é obrigatório' });
+  }
+
+  try {
+    const { testEmailSettings } = await import('./services/email.js');
+    await testEmailSettings({
+      smtp_host,
+      smtp_port: Number(body.smtp_port) || stored?.smtp_port || 587,
+      smtp_username: body.smtp_username ?? stored?.smtp_username ?? '',
+      smtp_password: password,
+      from_name: body.from_name ?? stored?.from_name ?? '',
+      from_email: body.from_email ?? stored?.from_email ?? '',
+      encryption: body.encryption || stored?.encryption || 'tls',
+    }, to);
+    return { ok: true, message: 'Email de teste enviado com sucesso' };
+  } catch (err: any) {
+    return reply.code(400).send({ error: err.message || 'Falha ao enviar email de teste' });
+  }
+});
+
+// GET per-project email settings
+// A senha SMTP nunca é devolvida; apenas o indicador smtp_password_configured.
+app.get('/email-settings/project', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+  const row = await getProjectEmailSettingsRow(ctx.projectId);
+  return { settings: toPublicEmailSettings(row) };
+});
+
+// PUT per-project email settings
+// A senha só é alterada quando um valor novo (não vazio e não máscara) é enviado.
+app.put('/email-settings/project', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+  const body = request.body || {};
+  // postgres.js não aceita `undefined`: campos ausentes viram NULL (COALESCE preserva).
+  const nullable = <T,>(v: T | undefined): T | null => (v === undefined ? null : v);
+  const smtp_host = nullable(body.smtp_host);
+  const smtp_port = nullable(body.smtp_port);
+  const smtp_username = nullable(body.smtp_username);
+  const from_name = nullable(body.from_name);
+  const from_email = nullable(body.from_email);
+  const encryption = nullable(body.encryption);
+  const newPassword = normalizeIncomingPassword(body.smtp_password);
+  const encryptedPassword = newPassword === null ? null : encryptSecret(newPassword);
+
+  await sql`
+    INSERT INTO livre_auth.project_email_settings (project_id, smtp_host, smtp_port, smtp_username, smtp_password, from_name, from_email, encryption)
+    VALUES (${ctx.projectId}, ${smtp_host ?? ''}, ${smtp_port ?? 587}, ${smtp_username ?? ''}, ${encryptedPassword ?? ''}, ${from_name ?? ''}, ${from_email ?? ''}, ${encryption ?? 'tls'})
+    ON CONFLICT (project_id) DO UPDATE SET
+      smtp_host = COALESCE(${smtp_host}, project_email_settings.smtp_host),
+      smtp_port = COALESCE(${smtp_port}, project_email_settings.smtp_port),
+      smtp_username = COALESCE(${smtp_username}, project_email_settings.smtp_username),
+      smtp_password = COALESCE(${encryptedPassword}, project_email_settings.smtp_password),
+      from_name = COALESCE(${from_name}, project_email_settings.from_name),
+      from_email = COALESCE(${from_email}, project_email_settings.from_email),
+      encryption = COALESCE(${encryption}, project_email_settings.encryption),
+      updated_at = NOW()
+  `;
+
+  const row = await getProjectEmailSettingsRow(ctx.projectId);
+  return { settings: toPublicEmailSettings(row) };
+});
+
+// POST test email (per-project)
+app.post('/email-settings/project/test', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+  const { to } = request.body || {};
+  if (!to) return reply.code(400).send({ error: 'Destinatário é obrigatório' });
+
+  try {
+    const { sendProjectEmail } = await import('./services/email.js');
+    await sendProjectEmail(ctx.projectId, to, 'Teste de email do projeto',
+      '<h2>Configuração de email OK!</h2><p>Seu servidor SMTP está configurado corretamente para este projeto.</p>');
+    return { ok: true, message: 'Email de teste enviado com sucesso' };
+  } catch (err: any) {
+    return reply.code(400).send({ error: err.message || 'Falha ao enviar email de teste' });
+  }
 });
 
 // Listar projetos
@@ -159,6 +336,10 @@ app.delete('/projects/:id', async (request: any, reply) => {
   const id = String(request.params?.id || '');
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
     return reply.code(400).send({ error: 'ID de projeto inválido' });
+  }
+
+  if (!(await confirmAdminPassword(request, request.body?.password))) {
+    return reply.code(403).send({ error: 'Senha do administrador incorreta.' });
   }
 
   try {
@@ -341,6 +522,36 @@ async function columnNames(schema: string, table: string) {
   return rows.map((r: any) => r.name as string);
 }
 
+/** Mesma consulta de `columnNames`, mas usando a transação em curso. */
+async function columnNamesTx(tx: any, schema: string, table: string) {
+  const rows = await tx`
+    SELECT a.attname AS name
+    FROM pg_attribute a
+    WHERE a.attrelid = ${`${qident(schema)}.${qident(table)}`}::regclass
+      AND a.attnum > 0 AND NOT a.attisdropped
+    ORDER BY a.attnum
+  `;
+  return rows.map((r: any) => r.name as string);
+}
+
+/** Colunas com tipo real (usado para validar filtros da API pública). */
+async function columnMetadata(schema: string, table: string): Promise<ColumnMeta[]> {
+  const rows = (await sql`
+    SELECT a.attname AS name,
+           format_type(a.atttypid, a.atttypmod) AS data_type,
+           a.attnotnull AS not_null
+    FROM pg_attribute a
+    WHERE a.attrelid = ${`${qident(schema)}.${qident(table)}`}::regclass
+      AND a.attnum > 0 AND NOT a.attisdropped
+    ORDER BY a.attnum
+  `) as any[];
+  return rows.map((r) => ({
+    name: r.name as string,
+    dataType: r.data_type as string,
+    notNull: !!r.not_null,
+  }));
+}
+
 // ============================================================
 // Campos embutidos (Built-in) e preenchimento automático
 // ============================================================
@@ -376,10 +587,24 @@ function pickSlugSeed(body: Record<string, any>): string {
 }
 
 async function uniqueSlug(schema: string, table: string, seed: string): Promise<string> {
+  return uniqueSlugWith(sql, schema, table, seed);
+}
+
+/**
+ * Gera um slug único usando a conexão informada.
+ * Dentro de uma transação é preciso usar a mesma conexão (`tx`), caso
+ * contrário a consulta veria um estado diferente do que será confirmado.
+ */
+async function uniqueSlugWith(
+  db: any,
+  schema: string,
+  table: string,
+  seed: string
+): Promise<string> {
   const base = slugifyValue(seed) || 'item';
   let candidate = base;
   for (let i = 2; i <= 30; i++) {
-    const [row] = (await sql.unsafe(
+    const [row] = (await db.unsafe(
       `SELECT 1 FROM ${qident(schema)}.${qident(table)} WHERE slug = $1 LIMIT 1`,
       [candidate]
     )) as any[];
@@ -387,6 +612,51 @@ async function uniqueSlug(schema: string, table: string, seed: string): Promise<
     candidate = `${base}-${i}`;
   }
   return `${base}-${randomUUID().slice(0, 8)}`;
+}
+
+/**
+ * Executa INSERT com retry automático em caso de violação de unicidade no slug.
+ * O slug deve já ter sido gerado (em data.slug) — se houver colisão, gera outro.
+ */
+async function insertWithSlugRetry(
+  db: any,
+  qualified: string,
+  keys: string[],
+  values: any[],
+  returningCols: string[],
+  schema: string,
+  table: string,
+  data: Record<string, any>
+): Promise<any[]> {
+  let attempt = 0;
+  const maxAttempts = 5;
+
+  while (true) {
+    try {
+      const rows = await db.unsafe(
+        `INSERT INTO ${qualified} (${keys.map(qident).join(', ')})
+         VALUES (${keys.map((_, i) => `$${i + 1}`).join(', ')})
+         RETURNING ${returningCols.map(qident).join(', ')}`,
+        values
+      );
+      return rows as any[];
+    } catch (err: any) {
+      // 23505 = unique_violation. Verifica se é no slug.
+      if (err.code === '23505' && /slug/i.test(err.message)) {
+        attempt++;
+        if (attempt >= maxAttempts) throw err;
+        // Gera novo slug e tenta novamente.
+        const seed = pickSlugSeed(data);
+        if (!seed) throw err;
+        data.slug = await uniqueSlugWith(db, schema, table, `${seed}-${attempt}`);
+        // Recalcula keys/values (slug pode ter mudado de posição).
+        const slugIdx = keys.indexOf('slug');
+        if (slugIdx >= 0) values[slugIdx] = data.slug;
+        continue;
+      }
+      throw err;
+    }
+  }
 }
 
 /**
@@ -401,8 +671,9 @@ async function prepareInsert(
   table: string,
   body: Record<string, any>,
   cols: string[],
-  contextUserId?: string | null
-): Promise<{ keys: string[]; values: any[]; error?: string }> {
+  contextUserId?: string | null,
+  db: any = sql
+): Promise<{ keys: string[]; values: any[]; error?: string; data?: Record<string, any> }> {
   const data: Record<string, any> = { ...(body || {}) };
   delete data.id;
   delete data.password_hash;
@@ -429,7 +700,7 @@ async function prepareInsert(
 
   if (cols.includes('slug') && !String(data.slug || '').trim()) {
     const seed = pickSlugSeed(data);
-    if (seed) data.slug = await uniqueSlug(schema, table, seed);
+    if (seed) data.slug = await uniqueSlugWith(db, schema, table, seed);
   }
 
   const keys = Object.keys(data).filter(
@@ -439,7 +710,7 @@ async function prepareInsert(
       data[k] !== null &&
       data[k] !== undefined
   );
-  return { keys, values: keys.map((k) => data[k]) };
+  return { keys, values: keys.map((k) => data[k]), data };
 }
 
 /**
@@ -627,16 +898,22 @@ app.post('/data/:table', async (request: any, reply) => {
   const keys = prepared.keys;
   if (!keys.length) return reply.code(400).send({ error: 'Nenhum campo válido informado' });
 
-  const placeholders = keys.map((_, i) => `$${i + 1}`);
   const values = prepared.values;
-  const returning = cols.map(qident).join(', ');
+  const returningCols = cols;
+  const qualified = `${qident(ctx.schema)}.${qident(table)}`;
 
   try {
-    const [row] = await sql.unsafe(
-      `INSERT INTO ${qident(ctx.schema)}.${qident(table)} (${keys.map(qident).join(', ')}) VALUES (${placeholders.join(', ')}) RETURNING ${returning}`,
-      values
+    const rows = await insertWithSlugRetry(
+      sql,
+      qualified,
+      keys,
+      values,
+      returningCols,
+      ctx.schema,
+      table,
+      prepared.data ?? body
     );
-    return { row };
+    return { row: rows[0] };
   } catch (err: any) {
     return reply.code(400).send({ error: err.message });
   }
@@ -731,6 +1008,24 @@ app.post('/schema', async (request: any, reply) => {
     return { ok: true, name };
   } catch (err: any) {
     return reply.code(400).send({ error: err.message });
+  }
+});
+
+// Resetar o schema do projeto: remove TODAS as tabelas, dados, views, funções
+// e tipos, recriando apenas a estrutura nativa (tabela `users`).
+app.post('/schema/reset', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+
+  if (!(await confirmAdminPassword(request, request.body?.password))) {
+    return reply.code(403).send({ error: 'Senha do administrador incorreta.' });
+  }
+
+  try {
+    await resetProjectSchema(ctx.schema, ctx.projectId);
+    return { ok: true, schema: ctx.schema };
+  } catch (err: any) {
+    return reply.code(400).send({ error: err.message || 'Erro ao resetar schema' });
   }
 });
 
@@ -1819,6 +2114,60 @@ app.put('/api-settings/tables', async (request: any, reply) => {
   return { exposedTables: valid };
 });
 
+// ---- Allowlist de RPC (administração da função) ----
+app.get('/rpc-functions', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+
+  const allowed = (await sql`
+    SELECT function_name, created_at FROM livre_auth.project_rpc_allowed
+    WHERE project_id = ${ctx.projectId} ORDER BY function_name
+  `) as any[];
+
+  // Funções disponíveis no schema do projeto (para Allowlist no painel).
+  const functions = await listProjectFunctions(ctx.schema);
+
+  return {
+    allowed: allowed.map((a) => a.function_name),
+    functions: functions.map((f) => ({
+      ...f,
+      allowed: allowed.some((a) => a.function_name === f.name),
+    })),
+  };
+});
+
+app.post('/rpc-functions/:name', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+  const name = String(request.params.name || '').trim();
+  if (!isValidFunctionName(name)) {
+    return reply.code(400).send({ error: 'Nome de função inválido' });
+  }
+  try {
+    await setRpcAllowed(ctx.projectId, ctx.schema, name, true);
+    await sql`
+      INSERT INTO livre_auth.project_rpc_allowed (project_id, function_name)
+      VALUES (${ctx.projectId}, ${name})
+      ON CONFLICT (project_id, function_name) DO NOTHING
+    `;
+    return { ok: true, function: name, allowed: true };
+  } catch (err: any) {
+    if (err instanceof RpcError) return reply.code(err.statusCode).send({ error: err.message });
+    return reply.code(400).send({ error: err.message });
+  }
+});
+
+app.delete('/rpc-functions/:name', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+  const name = String(request.params.name || '').trim();
+  await sql`
+    DELETE FROM livre_auth.project_rpc_allowed
+    WHERE project_id = ${ctx.projectId} AND function_name = ${name}
+  `;
+  return { ok: true, function: name, allowed: false };
+});
+
 // ---- RLS (privacidade por linha) ----
 app.get('/rls', async (request: any, reply) => {
   const ctx = await requireProject(request, reply);
@@ -2166,39 +2515,59 @@ app.get('/public/:table', async (request: any, reply) => {
   const { table } = request.params;
   if (!(await requirePublicTable(tokenRow, table, reply))) return;
 
-  const limit = Math.min(Math.max(parseInt(request.query.limit || '50', 10) || 50, 1), 200);
-  const offset = Math.max(parseInt(request.query.offset || '0', 10) || 0, 0);
-  const search = String(request.query.search || '').trim();
+  const meta = await columnMetadata(tokenRow.schema_name, table);
+  const cols = meta.filter((c) => !HIDDEN_COLUMNS.has(c.name));
+  if (!cols.length) return { data: [], total: 0, limit: 0, offset: 0, next_cursor: null };
 
-  const allCols = await columnNames(tokenRow.schema_name, table);
-  const cols = allCols.filter((n) => !HIDDEN_COLUMNS.has(n));
-  if (!cols.length) return { data: [], total: 0, limit, offset };
-
-  const params: any[] = [];
-  let where = '';
-  if (search) {
-    where = 'WHERE ' + cols.map((n) => `${qident(n)}::text ILIKE $1`).join(' OR ');
-    params.push('%' + search + '%');
+  const configuredMax = parseInt(process.env.API_MAX_LIMIT || '1000', 10);
+  let parsed;
+  try {
+    parsed = parseListQuery(request.query || {}, {
+      columns: meta,
+      hiddenColumns: HIDDEN_COLUMNS,
+      defaultLimit: 50,
+      maxLimit: Number.isFinite(configuredMax) && configuredMax > 0 ? configuredMax : 1000,
+    });
+  } catch (err: any) {
+    if (err instanceof QueryError) return reply.code(400).send({ error: err.message });
+    throw err;
   }
 
-  const select = cols.map(qident).join(', ');
-  const orderCol = allCols.includes('id') ? qident('id') : qident(cols[0]);
+  const countMode = countModeFromHeader(request.headers.prefer);
   const qualified = `${qident(tokenRow.schema_name)}.${qident(table)}`;
 
   try {
     const result = await withRlsContext(tokenRow, async (tx) => {
-      const rows = await tx.unsafe(
-        `SELECT ${select} FROM ${qualified} ${where}
-         ORDER BY ${orderCol} DESC LIMIT ${limit} OFFSET ${offset}`,
-        params
-      );
-      const [countRow] = (await tx.unsafe(
-        `SELECT count(*)::int AS count FROM ${qualified} ${where}`,
-        params
+      const rows = (await tx.unsafe(
+        `SELECT ${parsed.selectSql} FROM ${qualified} ${parsed.whereSql}
+         ORDER BY ${parsed.orderSql} LIMIT ${parsed.limit} OFFSET ${parsed.offset}`,
+        parsed.params
       )) as any[];
-      return { rows, total: countRow.count };
+
+      let total: number | null = null;
+      if (countMode === 'exact') {
+        const [countRow] = (await tx.unsafe(
+          `SELECT count(*)::int AS count FROM ${qualified} ${parsed.whereSql}`,
+          parsed.params
+        )) as any[];
+        total = countRow.count;
+      }
+      return { rows, total };
     });
-    return { data: result.rows, total: result.total, limit, offset };
+
+    const lastRow = result.rows[result.rows.length - 1];
+    const nextCursor =
+      parsed.cursorMode && result.rows.length === parsed.limit && lastRow
+        ? nextCursorFromRow(lastRow, parsed.orderFields)
+        : null;
+
+    return {
+      data: result.rows,
+      total: result.total,
+      limit: parsed.limit,
+      offset: parsed.offset,
+      next_cursor: nextCursor,
+    };
   } catch (err: any) {
     return reply.code(400).send({ error: err.message });
   }
@@ -2235,33 +2604,44 @@ app.post('/public/:table', async (request: any, reply) => {
   const { table } = request.params;
   if (!(await requirePublicTable(tokenRow, table, reply))) return;
 
-  const body = request.body || {};
-  const allCols = await columnNames(tokenRow.schema_name, table);
-  const cols = allCols.filter((n) => !HIDDEN_COLUMNS.has(n));
-  const prepared = await prepareInsert(
-    tokenRow.schema_name,
-    table,
-    body,
-    cols,
-    tokenRow.context_user_id
-  );
-  if (prepared.error) return reply.code(400).send({ error: prepared.error });
-  const keys = prepared.keys;
-  if (!keys.length) return reply.code(400).send({ error: 'Nenhum campo válido informado' });
-
-  const qualified = `${qident(tokenRow.schema_name)}.${qident(table)}`;
   try {
-    const row = await withRlsContext(tokenRow, async (tx) => {
-      const [r] = (await tx.unsafe(
-        `INSERT INTO ${qualified} (${keys.map(qident).join(', ')})
-         VALUES (${keys.map((_, i) => `$${i + 1}`).join(', ')})
-         RETURNING ${cols.map(qident).join(', ')}`,
-        prepared.values
-      )) as any[];
-      return r;
+    const result = await withIdempotency(request, tokenRow, `/public/${table}`, async () => {
+      const body = request.body || {};
+      const allCols = await columnNames(tokenRow.schema_name, table);
+      const cols = allCols.filter((n) => !HIDDEN_COLUMNS.has(n));
+      const prepared = await prepareInsert(
+        tokenRow.schema_name,
+        table,
+        body,
+        cols,
+        tokenRow.context_user_id
+      );
+      if (prepared.error) throw new Error(prepared.error);
+      const keys = prepared.keys;
+      if (!keys.length) throw new Error('Nenhum campo válido informado');
+      const values = prepared.values;
+      const returningCols = cols;
+      const qualified = `${qident(tokenRow.schema_name)}.${qident(table)}`;
+      const rows = await withRlsContext(tokenRow, async (tx) => {
+        return insertWithSlugRetry(
+          tx,
+          qualified,
+          keys,
+          values,
+          returningCols,
+          tokenRow.schema_name,
+          table,
+          prepared.data ?? body
+        );
+      });
+      return rows[0];
     });
-    return { data: row };
+
+    return reply.code(201).send({ data: result.data });
   } catch (err: any) {
+    if (err instanceof IdempotencyError) {
+      return reply.code(409).send({ error: err.message });
+    }
     return reply.code(400).send({ error: err.message });
   }
 });
@@ -2272,21 +2652,20 @@ app.patch('/public/:table/:id', async (request: any, reply) => {
   const { table, id } = request.params;
   if (!(await requirePublicTable(tokenRow, table, reply))) return;
 
-  const body = request.body || {};
-  const allCols = await columnNames(tokenRow.schema_name, table);
-  const cols = allCols.filter((n) => !HIDDEN_COLUMNS.has(n) && n !== 'id');
-  const prepared = prepareUpdate(table, body, cols);
-  if (prepared.error) return reply.code(400).send({ error: prepared.error });
-  const keys = prepared.keys;
-  if (!keys.length) return reply.code(400).send({ error: 'Nenhum campo válido informado' });
-
-  const values = prepared.values;
-  values.push(id);
-  const qualified = `${qident(tokenRow.schema_name)}.${qident(table)}`;
-  const updatedAt = allCols.includes('updated_at') && !keys.includes('updated_at')
-    ? `, ${qident('updated_at')} = NOW()`
-    : '';
-  try {
+  const result = await withIdempotency(request, tokenRow, `/public/${table}/${id}`, async () => {
+    const body = request.body || {};
+    const allCols = await columnNames(tokenRow.schema_name, table);
+    const cols = allCols.filter((n) => !HIDDEN_COLUMNS.has(n) && n !== 'id');
+    const prepared = prepareUpdate(table, body, cols);
+    if (prepared.error) throw new Error(prepared.error);
+    const keys = prepared.keys;
+    if (!keys.length) throw new Error('Nenhum campo válido informado');
+    const values = prepared.values;
+    values.push(id);
+    const qualified = `${qident(tokenRow.schema_name)}.${qident(table)}`;
+    const updatedAt = allCols.includes('updated_at') && !keys.includes('updated_at')
+      ? `, ${qident('updated_at')} = NOW()`
+      : '';
     const row = await withRlsContext(tokenRow, async (tx) => {
       const [r] = (await tx.unsafe(
         `UPDATE ${qualified}
@@ -2297,11 +2676,11 @@ app.patch('/public/:table/:id', async (request: any, reply) => {
       )) as any[];
       return r;
     });
-    if (!row) return reply.code(404).send({ error: 'Registro não encontrado' });
-    return { data: row };
-  } catch (err: any) {
-    return reply.code(400).send({ error: err.message });
-  }
+    if (!row) throw new Error('Registro não encontrado');
+    return row;
+  });
+
+  return reply.code(200).send({ data: result.data });
 });
 
 app.delete('/public/:table/:id', async (request: any, reply) => {
@@ -2310,19 +2689,319 @@ app.delete('/public/:table/:id', async (request: any, reply) => {
   const { table, id } = request.params;
   if (!(await requirePublicTable(tokenRow, table, reply))) return;
 
-  const qualified = `${qident(tokenRow.schema_name)}.${qident(table)}`;
   try {
-    const deleted = await withRlsContext(tokenRow, async (tx) => {
-      const rows = (await tx.unsafe(
-        `DELETE FROM ${qualified} WHERE id::text = $1 RETURNING id`,
-        [id]
-      )) as any[];
-      return rows.length;
+    const result = await withIdempotency(request, tokenRow, `/public/${table}/${id}`, async () => {
+      const qualified = `${qident(tokenRow.schema_name)}.${qident(table)}`;
+      const deleted = await withRlsContext(tokenRow, async (tx) => {
+        const rows = (await tx.unsafe(
+          `DELETE FROM ${qualified} WHERE id::text = $1 RETURNING id`,
+          [id]
+        )) as any[];
+        return rows.length;
+      });
+      if (!deleted) throw new Error('Registro não encontrado');
+      return { ok: true };
     });
-    if (!deleted) return reply.code(404).send({ error: 'Registro não encontrado' });
-    return { ok: true };
+
+    return reply.code(200).send(result.data);
   } catch (err: any) {
+    if (err instanceof IdempotencyError) return reply.code(409).send({ error: err.message });
+    const msg = err instanceof Error ? err.message : 'Erro ao excluir';
+    const status = msg === 'Registro não encontrado' ? 404 : 400;
+    return reply.code(status).send({ error: msg });
+  }
+});
+
+// ---- Tasks (fila de execução) ----
+
+app.post('/tasks', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+
+  const name = String(request.body?.name || '').trim();
+  if (!isValidFunctionName(name)) {
+    return reply.code(400).send({ error: 'Nome de função inválido' });
+  }
+  // Validação do catálogo + allowlist antes de criar a task.
+  const meta = await loadRpcFunctionInfo(ctx.schema, name);
+  if (!meta) return reply.code(404).send({ error: `Função não encontrada no projeto: "${name}"` });
+  if (meta.isSecurityDefiner) {
+    return reply.code(403).send({ error: `A função "${name}" é SECURITY DEFINER e não pode ser executada` });
+  }
+  if (meta.argCount !== 1) {
+    return reply.code(400).send({ error: `A função "${name}" deve receber exatamente 1 argumento (jsonb); possui ${meta.argCount}` });
+  }
+
+  const allowedNow = await isRpcAllowed(ctx.projectId, name);
+  if (!allowedNow) {
+    return reply.code(403).send({ error: `Função não autorizada para RPC: "${name}"` });
+  }
+
+  const payload = (request.body?.payload ?? {}) as Record<string, any>;
+  const contextUserId =
+    typeof request.body?.context_user_id === 'string' && UUID_RE.test(request.body.context_user_id)
+      ? request.body.context_user_id
+      : null;
+  const contextTenantId =
+    typeof request.body?.context_tenant_id === 'string' && UUID_RE.test(request.body.context_tenant_id)
+      ? request.body.context_tenant_id
+      : null;
+
+  const [task] = (await sql`
+    INSERT INTO libre_auth.tasks (project_id, name, payload, context_user_id, context_tenant_id, status)
+    VALUES (${ctx.projectId}, ${name}, ${JSON.stringify(payload)}::jsonb, ${contextUserId}::uuid, ${contextTenantId}::uuid, 'pending')
+    RETURNING id, project_id, name, payload, context_user_id, context_tenant_id, status, attempts, max_attempts, run_at, created_at, updated_at
+  `) as any[];
+
+  return reply.code(201).send({ data: task });
+});
+
+app.get('/tasks', async (request: any, reply) => {
+  const ctx = await requireProject(request, reply);
+  if (!ctx) return;
+
+  const tasks = (await sql`
+    SELECT id, project_id, name, payload, context_user_id, context_tenant_id, status, attempts, max_attempts, last_error, run_at, created_at, updated_at
+    FROM libre_auth.tasks
+    WHERE project_id = ${ctx.projectId}
+    ORDER BY created_at DESC
+    LIMIT 100
+  `) as any[];
+
+  return { data: tasks };
+});
+
+// ---- RPC (allowlist por projeto) ----
+
+/** Verifica se a função está na allowlist de RPC do projeto. */
+async function isRpcAllowed(projectId: string, functionName: string) {
+  const [row] = (await sql`
+    SELECT 1 FROM livre_auth.project_rpc_allowed
+    WHERE project_id = ${projectId} AND function_name = ${functionName}
+  `) as any[];
+  return !!row;
+}
+
+/** Habilita/desabilita a execução de uma função via API pública. */
+async function setRpcAllowed(projectId: string, schema: string, functionName: string, allowed: boolean) {
+  if (!isValidFunctionName(functionName)) {
+    throw new RpcError('Nome de função inválido');
+  }
+  // Validação completa (existência, assinatura e privilégios) via catálogo.
+  await assertRpcCallable(sql, schema, functionName);
+
+  if (allowed) {
+    await sql.unsafe(
+      `GRANT EXECUTE ON FUNCTION ${qident(schema)}.${qident(functionName)}(jsonb) TO authenticated`
+    );
+  } else {
+    await sql`
+      DELETE FROM livre_auth.project_rpc_allowed
+      WHERE project_id = ${projectId} AND function_name = ${functionName}
+    `;
+  }
+}
+
+/** Metadados de uma função do projeto (via role admin, fora do contexto RLS). */
+async function loadRpcFunctionInfo(schema: string, name: string) {
+  if (!isValidFunctionName(name)) return null;
+  const rows = (await sql`
+    SELECT p.proname AS name,
+           p.pronargs AS arg_count,
+           p.prosecdef AS security_definer,
+           pg_get_function_result(p.oid) AS return_type
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = ${schema} AND p.proname = ${name}
+    LIMIT 1
+  `) as any[];
+  if (!rows.length) return null;
+  return {
+    name: rows[0].name as string,
+    argCount: Number(rows[0].arg_count),
+    isSecurityDefiner: !!rows[0].security_definer,
+    returnType: (rows[0].return_type || 'void') as string,
+  };
+}
+
+/** Lista as funções do schema do projeto, marcando as elegíveis para RPC. */
+async function listProjectFunctions(schema: string) {
+  const rows = (await sql`
+    SELECT p.proname AS name,
+           pg_get_function_arguments(p.oid) AS args,
+           pg_get_function_result(p.oid) AS returns,
+           p.prosecdef AS security_definer,
+           p.pronargs AS arg_count
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = ${schema}
+    ORDER BY p.proname
+  `) as any[];
+  return rows.map((f) => ({
+    name: f.name as string,
+    args: f.args as string,
+    returns: f.returns as string,
+    security_definer: !!f.security_definer,
+    arg_count: Number(f.arg_count),
+    eligible: !f.security_definer && Number(f.arg_count) === 1,
+  }));
+}
+
+// Executa uma função RPC autorizada, dentro do contexto RLS do token.
+app.post('/public/rpc/:name', async (request: any, reply) => {
+  const tokenRow = await requireApiToken(request, reply);
+  if (!tokenRow) return;
+  const { name } = request.params;
+
+  if (!isValidFunctionName(name)) {
+    return reply.code(400).send({ error: 'Nome de função inválido' });
+  }
+  if (!(await isRpcAllowed(tokenRow.project_id, name))) {
+    return reply.code(403).send({ error: `Função não autorizada para RPC: "${name}"` });
+  }
+
+  const payload = request.body ?? {};
+  const result = await withIdempotency(request, tokenRow, `/public/rpc/${name}`, async () => {
+    // Validação do catálogo (conexão administrativa): garante que a função
+    // existe, não é SECURITY DEFINER e aceita apenas `payload jsonb`.
+    await assertRpcCallable(sql, tokenRow.schema_name, name);
+
+    const rows = await withRlsContext(tokenRow, async (tx) => {
+      const res = (await tx.unsafe(
+        buildRpcCall(tokenRow.schema_name, name),
+        [JSON.stringify(payload)]
+      )) as any[];
+      return res;
+    });
+    return { data: rows.length === 1 ? rows[0] : rows };
+  });
+
+  return reply.code(200).send(result.data);
+});
+
+// ---- Transação em lote (operações atômicas) ----
+app.post('/public/transaction', async (request: any, reply) => {
+  const tokenRow = await requireApiToken(request, reply);
+  if (!tokenRow) return;
+
+  const settings = await getApiSettings(tokenRow.project_id);
+  if (!settings?.data_api_enabled) {
+    return reply.code(403).send({ error: 'Data API desabilitada' });
+  }
+
+  let operations;
+  try {
+    operations = parseBatchOperations(request.body);
+  } catch (err: any) {
+    if (err instanceof RpcError) return reply.code(err.statusCode).send({ error: err.message });
     return reply.code(400).send({ error: err.message });
+  }
+
+  // Validação prévia (antes de abrir a transação): allowlist + catálogo.
+  // Qualquer falha aqui impede a abertura da transação.
+  try {
+    for (const op of operations) {
+      if (op.method !== 'rpc') continue;
+      const fn = op.function!;
+      if (!(await isRpcAllowed(tokenRow.project_id, fn))) {
+        throw new RpcError(`Função não autorizada para RPC: "${fn}"`, 403);
+      }
+      await assertRpcCallable(sql, tokenRow.schema_name, fn);
+    }
+  } catch (err: any) {
+    if (err instanceof RpcError) return reply.code(err.statusCode).send({ error: err.message });
+    return reply.code(400).send({ error: err.message });
+  }
+
+  try {
+    const results = await withRlsContext(tokenRow, async (tx) => {
+      // Timeouts defensivos: nada pode segurar locks indefinidamente.
+      await tx`SET LOCAL statement_timeout = '5s'`;
+      await tx`SET LOCAL lock_timeout = '2s'`;
+      await tx`SET LOCAL idle_in_transaction_session_timeout = '10s'`;
+
+      const out: any[] = [];
+      for (const op of operations) {
+        if (op.method === 'rpc') {
+          const fn = op.function!;
+          const rows = (await tx.unsafe(
+            buildRpcCall(tokenRow.schema_name, fn),
+            [JSON.stringify(op.payload ?? {})]
+          )) as any[];
+          out.push({ method: 'rpc', function: fn, data: rows.length === 1 ? rows[0] : rows });
+          continue;
+        }
+
+        const table = op.table!;
+        // Validação interna (não responde aqui): dentro da transação qualquer
+        // erro precisa ser lançado para que ocorra o ROLLBACK.
+        if (!(await tableExists(tokenRow.schema_name, table))) {
+          throw new RpcError(`Tabela não encontrada: "${table}"`, 404);
+        }
+        if (!(await isTableExposed(tokenRow.project_id, table))) {
+          throw new RpcError(`Tabela não exposta na API: "${table}"`, 403);
+        }
+
+        const allCols = await columnNamesTx(tx, tokenRow.schema_name, table);
+        const cols = allCols.filter((n: string) => !HIDDEN_COLUMNS.has(n));
+        const qualified = `${qident(tokenRow.schema_name)}.${qident(table)}`;
+
+        if (op.method === 'insert') {
+          const prepared = await prepareInsert(
+            tokenRow.schema_name,
+            table,
+            op.data ?? {},
+            cols,
+            tokenRow.context_user_id,
+            tx
+          );
+          if (prepared.error) throw new RpcError(prepared.error);
+          if (!prepared.keys.length) throw new RpcError('Nenhum campo válido informado');
+          const rows = await insertWithSlugRetry(
+            tx,
+            qualified,
+            prepared.keys,
+            prepared.values,
+            cols,
+            tokenRow.schema_name,
+            table,
+            prepared.data ?? op.data ?? {}
+          );
+          out.push({ method: 'insert', table, data: rows[0] });
+        } else if (op.method === 'update') {
+          const updCols = cols.filter((n: string) => n !== 'id');
+          const prepared = prepareUpdate(table, op.data ?? {}, updCols);
+          if (prepared.error) throw new RpcError(prepared.error);
+          if (!prepared.keys.length) throw new RpcError('Nenhum campo válido informado');
+          const values = [...prepared.values, op.id];
+          const updatedAt = allCols.includes('updated_at') && !prepared.keys.includes('updated_at')
+            ? `, ${qident('updated_at')} = NOW()`
+            : '';
+          const [row] = (await tx.unsafe(
+            `UPDATE ${qualified}
+             SET ${prepared.keys.map((k, i) => `${qident(k)} = $${i + 1}`).join(', ')}${updatedAt}
+             WHERE id::text = $${values.length}
+             RETURNING ${cols.map(qident).join(', ')}`,
+            values
+          )) as any[];
+          if (!row) throw new RpcError('Registro não encontrado', 404);
+          out.push({ method: 'update', table, data: row });
+        } else {
+          const rows = (await tx.unsafe(
+            `DELETE FROM ${qualified} WHERE id::text = $1 RETURNING id`,
+            [op.id]
+          )) as any[];
+          if (!rows.length) throw new RpcError('Registro não encontrado', 404);
+          out.push({ method: 'delete', table, data: { id: rows[0].id } });
+        }
+      }
+      return out;
+    });
+
+    return { data: results, committed: true };
+  } catch (err: any) {
+    if (err instanceof RpcError) return reply.code(err.statusCode).send({ error: err.message });
+    return reply.code(400).send({ error: err.message, committed: false });
   }
 });
 
