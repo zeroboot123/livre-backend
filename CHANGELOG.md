@@ -15,6 +15,15 @@ em versões MINOR. A partir de `1.0.0`, mudanças incompatíveis exigem MAJOR.
 - Formato de criptografia versionado com identificador de chave (`enc:v2`).
 - Rotação de chaves sem perda de credenciais.
 
+## [0.8.0] - 2026-11-17
+
+### Adicionado
+- Documentação de deploy (`docs/deploy.md`): procedimento de deploy automático via SSH,
+  regra sudoers restrita (`NOPASSWD`) e procedimento de recuperação em caso de falha.
+
+### Resolvido
+- Deploy na VPS validado com sucesso (build + recreate + healthcheck + verificação HTTP).
+
 ## [0.7.0] - 2026-11-17
 
 ### Adicionado
