@@ -15,6 +15,17 @@ em versões MINOR. A partir de `1.0.0`, mudanças incompatíveis exigem MAJOR.
 - Formato de criptografia versionado com identificador de chave (`enc:v2`).
 - Rotação de chaves sem perda de credenciais.
 
+## [0.7.0] - 2026-11-17
+
+### Adicionado
+- **Backup**: `scripts/backup.sh` migrado para `pg_dump -Fc` (custom) com checksum
+  SHA-256 e retenção configurável.
+- **Restauração**: `scripts/restore.sh` usando `pg_restore` com `--clean --if-exists`.
+- Documento de DR e recuperação: `docs/backup-restore.md`.
+
+### Pendente
+- Teste de restauração em ambiente isolado (banco `livre_backend_restore_test`).
+
 ## [0.6.0] - 2026-11-17
 
 ### Adicionado

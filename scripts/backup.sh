@@ -2,32 +2,31 @@
 # ==============================================================
 # LIVRE BACKEND - Script de Backup Automático
 # ==============================================================
-# Uso: ./scripts/backup.sh [retenção_dias]
+# Uso: ./scripts/backup.sh [retention_days]
 # Exemplo: ./scripts/backup.sh 7  (mantém backups dos últimos 7 dias)
 
-set -e
+set -euo pipefail
 
 RETENTION=${1:-7}
 BACKUP_DIR="./backups"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-FILENAME="livre_backend_${TIMESTAMP}.sql"
-COMPRESSED="${FILENAME}.gz"
+FILENAME="livre_backend_${TIMESTAMP}.dump"
+CHECKSUM_FILE="${FILENAME}.sha256"
 
 echo "🔵 Iniciando backup: ${FILENAME}"
 
-# Executar pg_dump via docker
+# pg_dump no formato custom (-Fc) permite restore/teste com pg_restore.
 docker compose exec -T postgres pg_dump \
     -U ${DB_SUPERUSER:-livre_admin} \
-    --clean \
-    --if-exists \
-    livre_backend > "${BACKUP_DIR}/${FILENAME}"
+    -Fc \
+    libre_backend > "${BACKUP_DIR}/${FILENAME}"
 
-# Comprimir
-gzip "${BACKUP_DIR}/${FILENAME}"
-echo "✅ Backup comprimido: ${COMPRESSED} ($(du -h "${BACKUP_DIR}/${COMPRESSED}" | cut -f1))"
+# Verificação de integridade: checksum SHA-256.
+sha256sum "${BACKUP_DIR}/${FILENAME}" | awk '{print $1}' > "${CHECKSUM_FILE}"
+echo "✅ Backup criado: ${FILENAME} ($(du -h "${BACKUP_DIR}/${FILENAME}" | cut -f1))"
 
-# Remover backups antigos
-find "${BACKUP_DIR}" -name "livre_backend_*.sql.gz" -mtime +${RETENTION} -delete
+# Remover backups antigos (além da retentção).
+find "${BACKUP_DIR}" -name "livre_backend_*.dump*" -mtime +${RETENTION} -delete
 echo "🧹 Backups com mais de ${RETENTION} dias removidos"
 
 echo "✅ Backup concluído com sucesso!"
