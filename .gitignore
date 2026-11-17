@@ -26,3 +26,21 @@ npm-debug.log*
 
 # === Backups locais ===
 backups/
+
+# === Segredos / chaves ===
+*.pem
+*.key
+id_rsa
+id_ed25519
+authorized_keys
+*.p12
+*.pfx
+secrets/
+credentials/
+dumps/
+database-backups/
+logs/
+
+# === Ambiente (variantes) ===
+.env.*
+!.env.example

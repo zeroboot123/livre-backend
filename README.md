@@ -12,7 +12,7 @@ Plataforma **Backend as a Service (BaaS)** — própria, modular, leve e segura.
 
 | | |
 |---|---|
-| **Versão atual** | [`0.1.0`](VERSION) |
+| **Versão atual** | [`0.8.0`](VERSION) |
 | **Situação** | 🚧 Em desenvolvimento (série `0.x`) |
 | **Autor** | Anderson — [zeroboot.com.br](https://zeroboot.com.br) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
@@ -137,8 +137,6 @@ No EasyPanel, vá em **"Domains"** do projeto. Você vai adicionar **5 rotas** �
 3. Em **"Path Prefix"**, digite `/auth`
 4. Em **"Target Port"**, coloque `3001`
 5. Repita para as outras 4 rotas, mudando path e porta conforme a tabela acima
-
-![Exemplo de configuração de rotas no EasyPanel](docs/images/easypanel-domains.png)
 
 ### 5. Implantar
 
@@ -305,8 +303,8 @@ arquivo [`VERSION`](VERSION) é a **fonte da verdade** da versão atual.
 
 | Tipo | Quando usar | Exemplo |
 |---|---|---|
-| **PATCH** | Correções e ajustes compatíveis | `0.1.0` → `0.1.1` |
-| **MINOR** | Novas funcionalidades compatíveis | `0.1.1` → `0.2.0` |
+| **PATCH** | Correções e ajustes compatíveis | `0.8.0` → `0.8.1` |
+| **MINOR** | Novas funcionalidades compatíveis | `0.8.1` → `0.9.0` |
 | **MAJOR** | Mudanças incompatíveis | `0.9.0` → `1.0.0` |
 
 Enquanto o projeto estiver em `0.x`, mudanças incompatíveis podem ocorrer em
@@ -319,12 +317,12 @@ MINOR. A versão **nunca** é alterada automaticamente em commits.
 ./scripts/version.sh show
 
 # Incrementar
-./scripts/version.sh bump patch   # 0.1.0 -> 0.1.1
-./scripts/version.sh bump minor   # 0.1.0 -> 0.2.0
-./scripts/version.sh bump major   # 0.1.0 -> 1.0.0 (somente quando estável)
+./scripts/version.sh bump patch   # 0.8.0 -> 0.8.1
+./scripts/version.sh bump minor   # 0.8.0 -> 0.9.0
+./scripts/version.sh bump major   # 0.8.0 -> 1.0.0 (somente quando estável)
 
 # Ou definir uma versão exata
-./scripts/version.sh set 0.2.0
+./scripts/version.sh set 0.9.0
 ```
 
 O script sincroniza `VERSION`, os quatro `package.json` e
