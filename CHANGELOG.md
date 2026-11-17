@@ -15,6 +15,19 @@ em versões MINOR. A partir de `1.0.0`, mudanças incompatíveis exigem MAJOR.
 - Formato de criptografia versionado com identificador de chave (`enc:v2`).
 - Rotação de chaves sem perda de credenciais.
 
+## [0.6.0] - 2026-11-17
+
+### Adicionado
+- **Rate limit** no admin-api (`@fastify/rate-limit`, padrão 300 req/min por token/API key/IP via `RATE_LIMIT_MAX`), com `allowList` para o endpoint `/health`.
+
+### Segurança
+- **Escopos de token** na API pública: tokens podem receber `permissions` (`read`, `write`, `rpc`, `auth`) no endpoint `POST /admin/api/api-tokens`; as rotas públicas passam a exigir o escopo correspondente (`requireApiToken` com escopo). Tokens legados sem escopo mantêm acesso total (compatibilidade).
+- **Auditoria**: gravação em `livre_auth.audit_log` nas operações de escrita da API pública (`insert`, `update`, `delete`, `rpc`).
+
+### Corrigido
+- **CORS** no admin-api e visual-db restrito via `CORS_ORIGINS` (lista de origens; `*` liberado por padrão).
+- Revogação do grant `SELECT` em `livre_auth.users` para os roles `anon` e `authenticated`.
+
 ## [0.5.0] - 2026-11-17
 
 ### Adicionado

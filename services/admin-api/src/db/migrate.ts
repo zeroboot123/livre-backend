@@ -111,6 +111,14 @@ export async function runMigrations() {
   await sql`ALTER TABLE livre_auth.api_tokens ADD COLUMN IF NOT EXISTS context_user_id uuid`;
   await sql`ALTER TABLE livre_auth.api_tokens ADD COLUMN IF NOT EXISTS context_tenant_id uuid`;
 
+  // ── Fase 7: escopos de token da API pública ───────────────────
+  // Tokens novos podem receber escopos (read/write/rpc/auth). Tokens legados
+  // sem escopo continuam com acesso total (compatibilidade com clientes ativos).
+  await sql`ALTER TABLE libre_auth.api_tokens ADD COLUMN IF NOT EXISTS permissions jsonb NOT NULL DEFAULT '{}';`;
+
+  // ── Fase 7: revoga SELECT amplo sobre usuários para anon/authenticated ──
+  await sql`REVOKE SELECT ON libre_auth.users FROM anon, authenticated`;
+
   // ── RLS (regras de privacidade por linha) ──────────────────
   await sql`
     CREATE TABLE IF NOT EXISTS livre_auth.rls_rules (

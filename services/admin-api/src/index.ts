@@ -1,6 +1,7 @@
 // Livre Backend — © 2026 Anderson · https://zeroboot.com.br
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import rateLimit from '@fastify/rate-limit';
 import multipart from '@fastify/multipart';
 import { randomUUID, createHash, randomBytes } from 'node:crypto';
 import {
@@ -48,6 +49,8 @@ import {
   parseBatchOperations,
 } from './services/rpc.js';
 import { withIdempotency, IdempotencyError } from './services/idempotency.js';
+import { hasTokenScope } from './services/scopes.js';
+import { writeAudit } from './services/audit.js';
 
 const app = Fastify({
   logger: false,
@@ -65,7 +68,32 @@ const app = Fastify({
 });
 const PORT = parseInt(process.env.PORT || '3002', 10);
 
-await app.register(cors, { origin: true });
+// CORS restrito pela variável de ambiente (lista de origens; "*" liberado por padrão).
+const corsOrigins = (process.env.CORS_ORIGINS || '*')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+await app.register(cors, {
+  origin: corsOrigins.length === 1 && corsOrigins[0] === '*' ? true : corsOrigins,
+  credentials: true,
+});
+await app.register(rateLimit, {
+  max: parseInt(process.env.RATE_LIMIT_MAX || '300', 10),
+  timeWindow: '1 minute',
+  allowList: (req: any) => {
+    const url = String(req?.raw?.url || req?.url || '').split('?')[0];
+    return url.endsWith('/health');
+  },
+  keyGenerator: (req: any) => {
+    const apiKey = req?.headers?.['x-api-key'];
+    const auth = req?.headers?.authorization;
+    const key =
+      (typeof apiKey === 'string' && apiKey) ||
+      (typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : '') ||
+      req?.ip;
+    return String(key || 'unknown');
+  },
+});
 await app.register(multipart, {
   limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024, files: 1 },
 });
@@ -1905,11 +1933,16 @@ async function authenticateApiToken(request: any) {
   return row;
 }
 
-async function requireApiToken(request: any, reply: any) {
+async function requireApiToken(request: any, reply: any, requiredScope?: string) {
   const row = await authenticateApiToken(request);
   if (!row) {
     reply.code(401).send({ error: 'API token inválido ou ausente' });
     return null;
+  }
+  if (requiredScope && !hasTokenScope(row.permissions, requiredScope)) {
+    return reply.code(403).send({
+      error: `Token sem permissão para executar esta operação (escopo exigido: ${requiredScope})`,
+    });
   }
   return row;
 }
@@ -2048,7 +2081,7 @@ app.get('/api-settings', async (request: any, reply) => {
   `) as any[];
   const tokens = (await sql`
     SELECT id, name, token_prefix, created_at, last_used_at, revoked,
-           context_user_id, context_tenant_id
+           context_user_id, context_tenant_id, permissions
     FROM livre_auth.api_tokens
     WHERE project_id = ${ctx.projectId}
     ORDER BY created_at DESC
@@ -2268,12 +2301,17 @@ app.post('/api-tokens', async (request: any, reply) => {
       ? request.body.context_tenant_id
       : null;
 
+  const permissions =
+    request.body?.permissions && typeof request.body.permissions === "object"
+      ? (request.body.permissions as Record<string, boolean>)
+      : {};
+
   const [apiToken] = (await sql`
     INSERT INTO livre_auth.api_tokens
-      (project_id, name, token_prefix, token_hash, context_user_id, context_tenant_id)
-    VALUES (${ctx.projectId}, ${name}, ${prefix}, ${hashApiToken(token)}, ${ctxUser}::uuid, ${ctxTenant}::uuid)
+      (project_id, name, token_prefix, token_hash, context_user_id, context_tenant_id, permissions)
+    VALUES (${ctx.projectId}, ${name}, ${prefix}, ${hashApiToken(token)}, ${ctxUser}::uuid, ${ctxTenant}::uuid, ${JSON.stringify(permissions)}::jsonb)
     RETURNING id, name, token_prefix, created_at, last_used_at, revoked,
-              context_user_id, context_tenant_id
+              context_user_id, context_tenant_id, permissions
   `) as any[];
 
   // O token em texto puro só é retornado UMA vez.
@@ -2495,7 +2533,7 @@ app.post('/public/auth/:project/logout', async (request: any, reply) => {
 
 // ---- Endpoints públicos (exigem token; sujeitos a RLS) ----
 app.get('/public/_meta', async (request: any, reply) => {
-  const tokenRow = await requireApiToken(request, reply);
+  const tokenRow = await requireApiToken(request, reply, 'read');
   if (!tokenRow) return;
   const settings = await getApiSettings(tokenRow.project_id);
   const tables = (await sql`
@@ -2510,7 +2548,7 @@ app.get('/public/_meta', async (request: any, reply) => {
 });
 
 app.get('/public/:table', async (request: any, reply) => {
-  const tokenRow = await requireApiToken(request, reply);
+  const tokenRow = await requireApiToken(request, reply, 'read');
   if (!tokenRow) return;
   const { table } = request.params;
   if (!(await requirePublicTable(tokenRow, table, reply))) return;
@@ -2574,7 +2612,7 @@ app.get('/public/:table', async (request: any, reply) => {
 });
 
 app.get('/public/:table/:id', async (request: any, reply) => {
-  const tokenRow = await requireApiToken(request, reply);
+  const tokenRow = await requireApiToken(request, reply, 'read');
   if (!tokenRow) return;
   const { table, id } = request.params;
   if (!(await requirePublicTable(tokenRow, table, reply))) return;
@@ -2599,7 +2637,7 @@ app.get('/public/:table/:id', async (request: any, reply) => {
 });
 
 app.post('/public/:table', async (request: any, reply) => {
-  const tokenRow = await requireApiToken(request, reply);
+  const tokenRow = await requireApiToken(request, reply, 'write');
   if (!tokenRow) return;
   const { table } = request.params;
   if (!(await requirePublicTable(tokenRow, table, reply))) return;
@@ -2637,6 +2675,16 @@ app.post('/public/:table', async (request: any, reply) => {
       return rows[0];
     });
 
+    await writeAudit({
+      userId: tokenRow.context_user_id ?? null,
+      projectId: tokenRow.project_id,
+      tenantId: tokenRow.context_tenant_id ?? null,
+      action: 'insert',
+      resource: table,
+      details: { id: (result.data as any)?.id ?? null },
+      ipAddress: request.ip,
+    });
+
     return reply.code(201).send({ data: result.data });
   } catch (err: any) {
     if (err instanceof IdempotencyError) {
@@ -2647,7 +2695,7 @@ app.post('/public/:table', async (request: any, reply) => {
 });
 
 app.patch('/public/:table/:id', async (request: any, reply) => {
-  const tokenRow = await requireApiToken(request, reply);
+  const tokenRow = await requireApiToken(request, reply, 'write');
   if (!tokenRow) return;
   const { table, id } = request.params;
   if (!(await requirePublicTable(tokenRow, table, reply))) return;
@@ -2680,11 +2728,21 @@ app.patch('/public/:table/:id', async (request: any, reply) => {
     return row;
   });
 
+  await writeAudit({
+    userId: tokenRow.context_user_id ?? null,
+    projectId: tokenRow.project_id,
+    tenantId: tokenRow.context_tenant_id ?? null,
+    action: 'update',
+    resource: table,
+    details: { id: (result.data as any)?.id ?? id },
+    ipAddress: request.ip,
+  });
+
   return reply.code(200).send({ data: result.data });
 });
 
 app.delete('/public/:table/:id', async (request: any, reply) => {
-  const tokenRow = await requireApiToken(request, reply);
+  const tokenRow = await requireApiToken(request, reply, 'write');
   if (!tokenRow) return;
   const { table, id } = request.params;
   if (!(await requirePublicTable(tokenRow, table, reply))) return;
@@ -2701,6 +2759,16 @@ app.delete('/public/:table/:id', async (request: any, reply) => {
       });
       if (!deleted) throw new Error('Registro não encontrado');
       return { ok: true };
+    });
+
+    await writeAudit({
+      userId: tokenRow.context_user_id ?? null,
+      projectId: tokenRow.project_id,
+      tenantId: tokenRow.context_tenant_id ?? null,
+      action: 'delete',
+      resource: table,
+      details: { id },
+      ipAddress: request.ip,
     });
 
     return reply.code(200).send(result.data);
@@ -2849,7 +2917,7 @@ async function listProjectFunctions(schema: string) {
 
 // Executa uma função RPC autorizada, dentro do contexto RLS do token.
 app.post('/public/rpc/:name', async (request: any, reply) => {
-  const tokenRow = await requireApiToken(request, reply);
+  const tokenRow = await requireApiToken(request, reply, 'rpc');
   if (!tokenRow) return;
   const { name } = request.params;
 
@@ -2876,12 +2944,22 @@ app.post('/public/rpc/:name', async (request: any, reply) => {
     return { data: rows.length === 1 ? rows[0] : rows };
   });
 
+  await writeAudit({
+    userId: tokenRow.context_user_id ?? null,
+    projectId: tokenRow.project_id,
+    tenantId: tokenRow.context_tenant_id ?? null,
+    action: 'rpc',
+    resource: `rpc:${name}`,
+    details: { function: name, result_rows: Array.isArray((result.data as any) || []) ? (result.data as any).length : 1 },
+    ipAddress: request.ip,
+  });
+
   return reply.code(200).send(result.data);
 });
 
 // ---- Transação em lote (operações atômicas) ----
 app.post('/public/transaction', async (request: any, reply) => {
-  const tokenRow = await requireApiToken(request, reply);
+  const tokenRow = await requireApiToken(request, reply, 'rpc');
   if (!tokenRow) return;
 
   const settings = await getApiSettings(tokenRow.project_id);
@@ -3007,7 +3085,7 @@ app.post('/public/transaction', async (request: any, reply) => {
 
 // Workflow API (placeholder funcional: recebe POST e devolve o payload)
 app.post('/public/wf/:name', async (request: any, reply) => {
-  const tokenRow = await requireApiToken(request, reply);
+  const tokenRow = await requireApiToken(request, reply, 'rpc');
   if (!tokenRow) return;
   const settings = await getApiSettings(tokenRow.project_id);
   if (!settings?.workflow_api_enabled) {

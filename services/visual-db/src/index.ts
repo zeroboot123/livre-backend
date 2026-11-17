@@ -16,7 +16,14 @@ const app = Fastify({
 });
 const PORT = parseInt(process.env.PORT || '3004', 10);
 
-await app.register(cors, { origin: true });
+const corsOrigins = (process.env.CORS_ORIGINS || '*')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+await app.register(cors, {
+  origin: corsOrigins.length === 1 && corsOrigins[0] === '*' ? true : corsOrigins,
+  credentials: true,
+});
 
 // Health check
 app.get('/health', async () => ({

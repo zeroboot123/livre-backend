@@ -204,3 +204,24 @@ Cada consulta executa com `SET LOCAL ROLE authenticated` e o contexto do token
 aplicadas pelo PostgreSQL — filtros adicionais **não** contornam RLS.
 
 O token de API pertence a **um** projeto; não existe acesso cruzado entre schemas.
+
+---
+
+## 11. Rate limit e escopos (Fase 7)
+
+- **Rate limit**: o admin-api aplica limite por chave (token/API key/Bearer ou IP),
+  padrão **300 requisições por minuto** (`RATE_LIMIT_MAX`). Exceder o limite responde
+  `429` (com `Retry-After`).
+
+| Rota | Escopo exigido |
+|---|---|
+| `GET /public/:table`, `GET /public/:table/:id`, `GET /public/_meta` | `read` |
+| `POST /public/:table`, `PATCH /public/:table/:id`, `DELETE /public/:table/:id` | `write` |
+| `POST /public/rpc/:name`, `POST /public/transaction`, `POST /public/wf/:name` | `rpc` |
+
+- Tokens com escopos: o painel cria tokens com `permissions` (`read`, `write`, `rpc`,
+  `auth`) via `POST /admin/api/api-tokens`. Sem escopo definido, o token tem acesso total
+  (compatibilidade com tokens criados antes da Fase 7).
+
+- Operações de escrita (`insert`, `update`, `delete`, `rpc`) são registradas em
+  `livre_auth.audit_log` com ação, recurso, detalhes, endereço IP e contexto do token.

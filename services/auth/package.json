@@ -1,6 +1,6 @@
 {
   "name": "@livre/auth-service",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "author": "Anderson (https://zeroboot.com.br)",
   "private": true,
   "type": "module",
