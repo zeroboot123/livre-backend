@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useAuth } from '@/lib/auth-context';
+import { APP_VERSION } from '@/lib/version';
 import Link from 'next/link';
 import Image from 'next/image';
 import logo from '@/../public/logo-mark.png';
@@ -147,6 +148,7 @@ export default function LoginPage() {
             <>Livre Backend &copy; {new Date().getFullYear()}</>
           )}
         </p>
+        <p className="text-center text-xs text-[#94A3B8] mt-1">Versão {APP_VERSION}</p>
       </div>
     </div>
   );

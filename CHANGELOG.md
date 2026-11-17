@@ -29,6 +29,7 @@ Primeira versão versionada do projeto. Consolida o estado atual da plataforma
 - Importação e exportação de migrações SQL.
 - Configuração de SMTP do painel e por projeto.
 - Página de redefinição de senha (`/admin/reset-password`).
+- Versão do sistema exibida no rodapé do painel e da tela de login.
 - Documentação do contrato de email em `docs/api/email-settings.md`.
 
 ### Alterado
