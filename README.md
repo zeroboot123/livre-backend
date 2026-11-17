@@ -8,6 +8,17 @@ Plataforma **Backend as a Service (BaaS)** — própria, modular, leve e segura.
 
 
 
+## 📌 Versão e status
+
+| | |
+|---|---|
+| **Versão atual** | [`0.1.0`](VERSION) |
+| **Situação** | 🚧 Em desenvolvimento (série `0.x`) |
+| **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
+
+A série `0.x` é de desenvolvimento: a API pode mudar de forma incompatível em
+versões MINOR. `1.0.0` só será lançada quando o contrato estiver estável.
+
 ## 📋 Visão Geral
 
 O Livre Backend é uma plataforma BaaS que oferece funcionalidades similares ao Supabase e Bubble.io, mas com arquitetura independente, utilizando PostgreSQL, PostgREST e Node.js.
@@ -212,6 +223,8 @@ livre-backend/
 ├── imagens-bubble/       # Referências de UI
 ├── docker-compose.yml    # Orquestração principal
 ├── docker-compose.easypanel.yml  # Deploy no EasyPanel
+├── VERSION               # Versão atual (fonte da verdade)
+├── CHANGELOG.md          # Histórico de versões
 ├── .env.example          # Template de variáveis de ambiente
 └── README.md             # Este arquivo
 ```
@@ -228,6 +241,89 @@ livre-backend/
 - MinIO sem interface web (`MINIO_BROWSER: off`)
 - CORS configurável
 - Logs de auditoria
+
+## 🏷️ Versionamento e Releases
+
+O projeto segue [Semantic Versioning](https://semver.org/lang/pt-BR/) e o
+arquivo [`VERSION`](VERSION) é a **fonte da verdade** da versão atual.
+
+### Regras
+
+| Tipo | Quando usar | Exemplo |
+|---|---|---|
+| **PATCH** | Correções e ajustes compatíveis | `0.1.0` → `0.1.1` |
+| **MINOR** | Novas funcionalidades compatíveis | `0.1.1` → `0.2.0` |
+| **MAJOR** | Mudanças incompatíveis | `0.9.0` → `1.0.0` |
+
+Enquanto o projeto estiver em `0.x`, mudanças incompatíveis podem ocorrer em
+MINOR. A versão **nunca** é alterada automaticamente em commits.
+
+### Como atualizar a versão
+
+```bash
+# Ver a versão atual (e commit/tag)
+./scripts/version.sh show
+
+# Incrementar
+./scripts/version.sh bump patch   # 0.1.0 -> 0.1.1
+./scripts/version.sh bump minor   # 0.1.0 -> 0.2.0
+./scripts/version.sh bump major   # 0.1.0 -> 1.0.0 (somente quando estável)
+
+# Ou definir uma versão exata
+./scripts/version.sh set 0.2.0
+```
+
+O script sincroniza `VERSION`, os quatro `package.json` e
+`panel/src/lib/version.ts` (exibido no painel). Depois:
+
+1. Atualize o `CHANGELOG.md` com a nova seção `## [x.y.z] - AAAA-MM-DD`.
+2. Rode `./scripts/version.sh check` (valida a sincronização).
+3. Faça commit e deploy em `main`.
+
+### Como publicar uma Release no GitHub
+
+Há um script próprio, **manual e seguro** (não publica nada por padrão):
+
+```bash
+./scripts/release.sh                          # dry-run: valida e mostra o plano
+./scripts/release.sh --confirm                # cria a tag anotada vX.Y.Z
+./scripts/release.sh --confirm --push         # envia a tag ao GitHub
+./scripts/release.sh --confirm --push --github-release
+                                              # + cria a GitHub Release (gh)
+```
+
+O script:
+
+- exige árvore de trabalho limpa e versão sincronizada;
+- recusa tags duplicadas (locais ou remotas);
+- **nunca** apaga nem move tags existentes;
+- roda `./scripts/version.sh check` antes de taguear;
+- só cria GitHub Release com a flag explícita `--github-release`;
+- marca `0.x` automaticamente como *pre-release*.
+
+Requisito para a Release: `gh` autenticado (`gh auth login`). Sem `gh`, use o
+GitHub → **Releases → Draft a new release** apontando para a tag já enviada.
+
+### Como identificar a versão instalada
+
+```bash
+cat VERSION                      # versão do código
+git describe --tags --always     # tag mais próxima + commit
+ git log -1 --oneline            # commit exato em execução
+```
+
+No painel, a versão aparece no rodapé do **Dashboard**. Em produção, o
+`git log -1` da VPS é a referência do que está no ar (o deploy usa o código da
+VPS, não o do GitHub).
+
+### Processo de release
+
+1. Atualize `CHANGELOG.md` (Adicionado / Alterado / Corrigido / Segurança).
+2. `./scripts/version.sh bump <patch|minor|major>`.
+3. Rode os testes e o deploy em ambiente de validação.
+4. `./scripts/release.sh --confirm --push [--github-release]`.
+5. Nunca publique versão com falha crítica; nunca execute migração destrutiva
+   apenas por causa de uma atualização de versão.
 
 ## 📄 Licença
 

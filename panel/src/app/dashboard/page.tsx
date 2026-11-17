@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { apiFetch } from '@/lib/api-client';
 import { Card, StatCard } from '@/components/ui/Card';
+import { APP_VERSION } from '@/lib/version';
 
 export default function DashboardPage() {
   const [stats, setStats] = useState<any>(null);
@@ -64,7 +65,7 @@ export default function DashboardPage() {
               </p>
             </div>
             <hr className="border-[#E2E8F0]" />
-            <p className="text-xs text-[#94A3B8]">Versão 1.0.0</p>
+            <p className="text-xs text-[#94A3B8]">Versão {APP_VERSION}</p>
           </div>
         </Card>
       </div>
