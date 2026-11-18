@@ -67,16 +67,33 @@ credencial e deve permanecer `600`.
 
 ## 4. Criar o projeto no EasyPanel
 
+Arquitetura: o GitHub Actions constrói e publica as imagens; o EasyPanel
+**apenas baixa e executa** essas imagens. Não é necessário (nem desejado)
+configurar uma segunda integração Git nem gerar outra chave SSH.
+
 1. **Projeto:** `livre-backend`.
 2. **Serviço:** tipo **Compose**, nome `livre-backend`.
-3. **Fonte:** Git (repositório privado, chave de deploy) ou conteúdo inline
-   com o `docker-compose.easypanel.yml` deste repositório.
-4. **Caminho de build:** deve conter o repositório (para o
-   `docker/postgres/init.sql` e o compose).
-5. **Ambiente:** configure as variáveis da seção 5 e mantenha
+3. **Fonte:** **conteúdo inline** (editor de Compose do EasyPanel) — cole o
+   `docker-compose.easypanel.yml` deste repositório. A fonte Git existente no
+   EasyPanel continua sendo a única e não é usada por este serviço.
+4. **Ambiente:** configure as variáveis da seção 5 e mantenha
    **“Criar arquivo .env”** habilitado.
 
-> O compose não usa `build:`; portanto não há compilação na VPS.
+> O compose não usa `build:` e não referencia nenhum arquivo do repositório na
+> VPS (sem `build.context`, sem bind mount de `init.sql`). Ele funciona apenas
+> com imagens publicadas no GHCR e com volumes nomeados.
+
+### Instalação nova (banco vazio)
+
+O `docker/postgres/init.sql` **não** é montado pelo compose (para não exigir o
+repositório na VPS). Em uma instalação do zero, aplique-o uma única vez:
+
+```bash
+docker exec -i <container_postgres> psql -U livre_admin -d livre_backend \
+  < docker/postgres/init.sql
+```
+
+Em instalações já existentes isso é desnecessário — os dados estão no volume.
 
 ---
 

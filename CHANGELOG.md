@@ -10,6 +10,13 @@ em versões MINOR. A partir de `1.0.0`, mudanças incompatíveis exigem MAJOR.
 
 ## [Não lançado]
 
+### Alterado
+- `docker-compose.easypanel.yml` não monta mais `docker/postgres/init.sql`:
+  o compose do EasyPanel passou a depender **apenas** de imagens do GHCR e de
+  volumes nomeados, sem nenhum arquivo do repositório na VPS.
+- Documentação da Fonte: compose inline no EasyPanel (sem segunda integração
+  Git e sem chave SSH adicional).
+
 ### Planejado
 - Chave de criptografia dedicada (`EMAIL_ENCRYPTION_KEY`) nos containers.
 - Formato de criptografia versionado com identificador de chave (`enc:v2`).
