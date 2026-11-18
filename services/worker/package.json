@@ -1,6 +1,6 @@
 {
   "name": "@livre/worker",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "author": "Anderson (https://zeroboot.com.br)",
   "private": true,
   "type": "module",

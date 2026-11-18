@@ -17,6 +17,13 @@ em versões MINOR. A partir de `1.0.0`, mudanças incompatíveis exigem MAJOR.
 - Execução do worker no deploy do EasyPanel.
 - Endurecimento da exposição da porta 3000 do EasyPanel.
 
+## [0.9.1] - 2026-11-18
+
+### Resolvido
+- Workflow `release-images.yml` inválido: `env.PUBLIC_URL` era usado dentro de
+  `strategy.matrix` (contexto não permitido), impedindo qualquer execução.
+  Os build args do painel foram removidos — as URLs são resolvidas em runtime.
+
 ## [0.9.0] - 2026-11-18
 
 ### Adicionado
