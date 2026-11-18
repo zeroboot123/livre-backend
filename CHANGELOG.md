@@ -17,6 +17,13 @@ em versões MINOR. A partir de `1.0.0`, mudanças incompatíveis exigem MAJOR.
 - Execução do worker no deploy do EasyPanel.
 - Endurecimento da exposição da porta 3000 do EasyPanel.
 
+## [0.9.2] - 2026-11-18
+
+### Resolvido
+- `admin-api`: o build falhava em `chown nodeuser:nodeuser /backups` porque o
+  grupo criado no runner é `nodejs` (gid 1001) — corrigido para
+  `chown nodeuser:nodejs`.
+
 ## [0.9.1] - 2026-11-18
 
 ### Resolvido

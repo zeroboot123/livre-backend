@@ -23,7 +23,7 @@ COPY package.json ./
 
 # Volume de backups (BACKUP_DIR). Criado com dono do usuário da aplicação
 # para permitir escrita quando o volume nomeado for inicializado.
-RUN mkdir -p /backups && chown nodeuser:nodeuser /backups
+RUN mkdir -p /backups && chown nodeuser:nodejs /backups
 
 USER nodeuser
 

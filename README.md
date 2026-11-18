@@ -12,7 +12,7 @@ Plataforma **Backend as a Service (BaaS)** — própria, modular, leve e segura.
 
 | | |
 |---|---|
-| **Versão atual** | [`0.9.1`](VERSION) |
+| **Versão atual** | [`0.9.2`](VERSION) |
 | **Situação** | 🚧 Em desenvolvimento (série `0.x`) |
 | **Autor** | Anderson — [zeroboot.com.br](https://zeroboot.com.br) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
