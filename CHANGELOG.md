@@ -10,19 +10,28 @@ em versões MINOR. A partir de `1.0.0`, mudanças incompatíveis exigem MAJOR.
 
 ## [Não lançado]
 
-### Alterado
-- `docker-compose.easypanel.yml` não monta mais `docker/postgres/init.sql`:
-  o compose do EasyPanel passou a depender **apenas** de imagens do GHCR e de
-  volumes nomeados, sem nenhum arquivo do repositório na VPS.
-- Documentação da Fonte: compose inline no EasyPanel (sem segunda integração
-  Git e sem chave SSH adicional).
-
 ### Planejado
 - Chave de criptografia dedicada (`EMAIL_ENCRYPTION_KEY`) nos containers.
 - Formato de criptografia versionado com identificador de chave (`enc:v2`).
 - Rotação de chaves sem perda de credenciais.
 - Execução do worker no deploy do EasyPanel.
 - Endurecimento da exposição da porta 3000 do EasyPanel.
+
+## [0.10.0] - 2026-11-18
+
+### Alterado
+- Estratégia de deploy: **EasyPanel com fonte Git** (clone do repositório +
+  `docker compose build/up`) substitui GHCR + GitHub Actions.
+- `docker-compose.easypanel.yml` reescrito com `build:` e `build.context`
+  **relativos** (`./services/*`, `./panel`), eliminando o erro de privilégios de
+  caminho absoluto no build do EasyPanel.
+- Documentação de deploy substituída por `docs/easypanel-deploy.md` (Fonte,
+  variáveis, domínios, volumes, atualização, logs, rollback e diagnóstico).
+
+### Removido
+- Workflow `.github/workflows/release-images.yml` (build/push no GHCR).
+- Variável `APP_VERSION` do `.env.example` e do compose.
+- `docs/easypanel-ghcr.md` (estratégia anterior).
 
 ## [0.9.2] - 2026-11-18
 

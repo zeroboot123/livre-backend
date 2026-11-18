@@ -1,14 +1,17 @@
 # ==============================================================
-# LIVRE BACKEND — EasyPanel (produção com imagens do GHCR)
+# LIVRE BACKEND — EasyPanel (fonte Git, build no servidor)
 # --------------------------------------------------------------
-# Este compose NÃO compila código na VPS: usa imagens publicadas
-# pelo GitHub Actions em ghcr.io/zeroboot123/livre-*.
+# Este compose é a fonte de verdade do deploy:
+#   EasyPanel (Fonte: Git) → clona o repositório → docker compose build/up.
+#
+# Não há imagens de aplicação pré-publicadas e não há GHCR. As imagens dos
+# serviços são construídas a partir dos Dockerfiles deste repositório, com
+# caminhos RELATIVOS (nunca /home/... ou caminhos absolutos).
 #
 # Variáveis obrigatórias no EasyPanel (Ambiente):
-#   APP_VERSION, PUBLIC_URL, DB_SUPERPASS, JWT_SECRET,
-#   MINIO_ROOT_USER, MINIO_ROOT_PASSWORD
+#   PUBLIC_URL, DB_SUPERPASS, JWT_SECRET, MINIO_ROOT_USER, MINIO_ROOT_PASSWORD
 #
-# Volumes e redes preservam os nomes da instalação atual.
+# Volumes e rede preservam os nomes da instalação atual.
 # ==============================================================
 services:
   postgres:
@@ -18,6 +21,8 @@ services:
       - easypanel
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # Executado apenas quando o volume de dados está vazio (instalação nova).
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     environment:
       POSTGRES_USER: ${DB_SUPERUSER:-livre_admin}
       POSTGRES_PASSWORD: ${DB_SUPERPASS:?DB_SUPERPASS is required}
@@ -86,8 +91,9 @@ services:
         max-file: "3"
 
   auth-service:
-    image: ghcr.io/zeroboot123/livre-auth-service:${APP_VERSION:?APP_VERSION is required}
-    pull_policy: always
+    build:
+      context: ./services/auth
+      dockerfile: Dockerfile
     restart: unless-stopped
     networks:
       - easypanel
@@ -122,8 +128,9 @@ services:
         max-file: "3"
 
   admin-api:
-    image: ghcr.io/zeroboot123/livre-admin-api:${APP_VERSION:?APP_VERSION is required}
-    pull_policy: always
+    build:
+      context: ./services/admin-api
+      dockerfile: Dockerfile
     restart: unless-stopped
     networks:
       - easypanel
@@ -165,8 +172,9 @@ services:
         max-file: "3"
 
   visual-db:
-    image: ghcr.io/zeroboot123/livre-visual-db:${APP_VERSION:?APP_VERSION is required}
-    pull_policy: always
+    build:
+      context: ./services/visual-db
+      dockerfile: Dockerfile
     restart: unless-stopped
     networks:
       - easypanel
@@ -196,8 +204,9 @@ services:
         max-file: "3"
 
   admin-panel:
-    image: ghcr.io/zeroboot123/livre-admin-panel:${APP_VERSION:?APP_VERSION is required}
-    pull_policy: always
+    build:
+      context: ./panel
+      dockerfile: Dockerfile
     restart: unless-stopped
     networks:
       - easypanel
@@ -207,7 +216,6 @@ services:
       - visual-db
     environment:
       # Lidas em RUNTIME pelo layout do Next.js e injetadas no navegador.
-      # Permitem a mesma imagem em qualquer domínio, sem rebuild.
       NEXT_PUBLIC_API_URL: ${PUBLIC_URL}/admin/api
       NEXT_PUBLIC_AUTH_URL: ${PUBLIC_URL}/auth
       NEXT_PUBLIC_VISUAL_DB_URL: ${PUBLIC_URL}/admin/visual-db

@@ -12,7 +12,7 @@ Plataforma **Backend as a Service (BaaS)** — própria, modular, leve e segura.
 
 | | |
 |---|---|
-| **Versão atual** | [`0.9.2`](VERSION) |
+| **Versão atual** | [`0.10.0`](VERSION) |
 | **Situação** | 🚧 Em desenvolvimento (série `0.x`) |
 | **Autor** | Anderson — [zeroboot.com.br](https://zeroboot.com.br) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
@@ -377,35 +377,39 @@ VPS, não o do GitHub).
 5. Nunca publique versão com falha crítica; nunca execute migração destrutiva
    apenas por causa de uma atualização de versão.
 
-## 🚀 Instalação pelo EasyPanel (GHCR)
+## 🚀 Instalação pelo EasyPanel (fonte Git)
 
-O fluxo de produção usa imagens publicadas no GitHub Container Registry:
-**GitHub → Actions → GHCR → EasyPanel**. A VPS não compila código.
+O deploy usa a integração **Git do EasyPanel**: o servidor clona o repositório
+e executa `docker compose build` + `up` com o
+[`docker-compose.easypanel.yml`](docker-compose.easypanel.yml). Não há GHCR nem
+GitHub Actions.
 
-Resumo:
+Na tela **Fonte** do serviço Compose:
 
-1. Configure o acesso do host ao GHCR com um PAT `read:packages`.
-2. Crie no EasyPanel um serviço **Compose** usando o
-   [`docker-compose.easypanel.yml`](docker-compose.easypanel.yml).
-3. Defina `APP_VERSION`, `PUBLIC_URL`, `DB_SUPERPASS`, `JWT_SECRET`,
-   `MINIO_ROOT_USER` e `MINIO_ROOT_PASSWORD` em **Ambiente**.
-4. Configure os 5 domínios/rotas (`/admin/api`, `/admin/visual-db`, `/admin`,
-   `/auth`, `/api/rest`).
-5. Clique em **Implantar**.
+| Campo | Valor |
+|---|---|
+| Provedor | GitHub (integração existente) |
+| Repositório | `zeroboot123/livre-backend` |
+| Branch | `main` |
+| Caminho do Compose | `docker-compose.easypanel.yml` |
 
-Guia completo (GHCR, variáveis, volumes, atualização, rollback, backup,
-automação e solução de problemas): [`docs/easypanel-ghcr.md`](docs/easypanel-ghcr.md).
+Em **Ambiente**, defina `PUBLIC_URL`, `DB_SUPERPASS`, `JWT_SECRET`,
+`MINIO_ROOT_USER` e `MINIO_ROOT_PASSWORD`. Depois configure as rotas
+(`/admin/api`, `/admin/visual-db`, `/admin`, `/auth`, `/api/rest`) e clique em
+**Implantar**.
+
+Guia completo (Fonte, variáveis, volumes, atualização, rollback, logs, backup e
+diagnóstico): [`docs/easypanel-deploy.md`](docs/easypanel-deploy.md).
 
 ## 🛠 Desenvolvimento e publicação
 
 1. Desenvolva e teste localmente (`docker compose up` ou serviços isolados).
 2. Atualize `CHANGELOG.md` e a versão (`./scripts/version.sh bump`).
-3. Faça commit na `main` e crie a tag: `git tag vX.Y.Z && git push origin main vX.Y.Z`.
-4. O workflow **Release images** (`.github/workflows/release-images.yml`)
-   executa os testes e publica as imagens no GHCR.
-5. No EasyPanel, atualize `APP_VERSION` e reimplante.
-6. Valide healthchecks e endpoints; em caso de falha, volte `APP_VERSION`
-   para a versão anterior (rollback sem perda de dados).
+3. Faça commit na `main` e dê `git push`.
+4. No EasyPanel, clique em **Implantar** (ele puxa o commit e reconstrói as
+   imagens dos serviços alterados).
+5. Valide healthchecks e endpoints. Em caso de falha, reimplante a implantação
+   anterior no EasyPanel ou faça `git revert` — os volumes não são afetados.
 
 ## 📄 Licença e créditos
 
