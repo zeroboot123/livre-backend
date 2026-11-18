@@ -230,11 +230,11 @@ curl -fsS -X POST "http://PAINEL:3000/api/compose/deploy/<TOKEN>"
 ### 11.2 API do EasyPanel
 
 A API fica em `https://PAINEL/api` e usa `Authorization: Bearer <token>`.
-Endpoints úteis (confirmar na versão instalada):
+Endpoints confirmados na instalação atual (2.38.0) via `GET /api/openapi.json`:
 
 | Operação | Endpoint |
 |---|---|
-| Login | `POST /api/...` com e-mail e senha (retorna token) |
+| Login | `POST /api/login` |
 | Sessão | `GET /api/getSession` |
 | Projetos/serviços | `GET /api/listProjectsAndServices` |
 | Variáveis do projeto | `POST /api/updateProjectEnv` |
@@ -265,6 +265,14 @@ literal.
 | `relation ... does not exist` | banco vazio ou volume errado | conferir nome do volume e restaurar backup |
 | Painel com URLs erradas | `PUBLIC_URL` incorreta | corrigir e reimplantar (runtime, sem rebuild) |
 | `APP_VERSION is required` | variável ausente | definir a versão exata no Ambiente |
+
+### Exposição da porta 3000
+
+O painel do EasyPanel (`easypanel/easypanel`) publica `0.0.0.0:3000`
+(HTTP) no host. O acesso administrativo deve ser restrito (firewall/IP
+allowlist) ou publicado via Traefik com HTTPS. A porta não é usada pelos
+serviços do Livre Backend — o `postgrest` só é acessível na rede interna
+(`postgrest:3000`). Alterar isso exige janela de manutenção e autorização.
 
 ---
 
