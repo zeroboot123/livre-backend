@@ -12,7 +12,7 @@ Plataforma **Backend as a Service (BaaS)** — própria, modular, leve e segura.
 
 | | |
 |---|---|
-| **Versão atual** | [`0.8.0`](VERSION) |
+| **Versão atual** | [`0.9.0`](VERSION) |
 | **Situação** | 🚧 Em desenvolvimento (série `0.x`) |
 | **Autor** | Anderson — [zeroboot.com.br](https://zeroboot.com.br) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
@@ -376,6 +376,36 @@ VPS, não o do GitHub).
 4. `./scripts/release.sh --confirm --push [--github-release]`.
 5. Nunca publique versão com falha crítica; nunca execute migração destrutiva
    apenas por causa de uma atualização de versão.
+
+## 🚀 Instalação pelo EasyPanel (GHCR)
+
+O fluxo de produção usa imagens publicadas no GitHub Container Registry:
+**GitHub → Actions → GHCR → EasyPanel**. A VPS não compila código.
+
+Resumo:
+
+1. Configure o acesso do host ao GHCR com um PAT `read:packages`.
+2. Crie no EasyPanel um serviço **Compose** usando o
+   [`docker-compose.easypanel.yml`](docker-compose.easypanel.yml).
+3. Defina `APP_VERSION`, `PUBLIC_URL`, `DB_SUPERPASS`, `JWT_SECRET`,
+   `MINIO_ROOT_USER` e `MINIO_ROOT_PASSWORD` em **Ambiente**.
+4. Configure os 5 domínios/rotas (`/admin/api`, `/admin/visual-db`, `/admin`,
+   `/auth`, `/api/rest`).
+5. Clique em **Implantar**.
+
+Guia completo (GHCR, variáveis, volumes, atualização, rollback, backup,
+automação e solução de problemas): [`docs/easypanel-ghcr.md`](docs/easypanel-ghcr.md).
+
+## 🛠 Desenvolvimento e publicação
+
+1. Desenvolva e teste localmente (`docker compose up` ou serviços isolados).
+2. Atualize `CHANGELOG.md` e a versão (`./scripts/version.sh bump`).
+3. Faça commit na `main` e crie a tag: `git tag vX.Y.Z && git push origin main vX.Y.Z`.
+4. O workflow **Release images** (`.github/workflows/release-images.yml`)
+   executa os testes e publica as imagens no GHCR.
+5. No EasyPanel, atualize `APP_VERSION` e reimplante.
+6. Valide healthchecks e endpoints; em caso de falha, volte `APP_VERSION`
+   para a versão anterior (rollback sem perda de dados).
 
 ## 📄 Licença e créditos
 

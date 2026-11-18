@@ -1,5 +1,7 @@
 'use client';
 
+import { publicEnv } from '@/lib/public-env';
+
 export default function ForgotPasswordPage() {
   return (
     <div className="min-h-screen bg-gray-950 text-white flex items-center justify-center p-4">
@@ -11,7 +13,7 @@ export default function ForgotPasswordPage() {
         <form onSubmit={async (e) => {
           e.preventDefault();
           const email = (e.target as any).email.value;
-          await fetch(`${process.env.NEXT_PUBLIC_AUTH_URL || 'https://livrebackend.gerbox.com.br/auth'}/forgot-password`, {
+          await fetch(`${publicEnv('AUTH_URL')}/forgot-password`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email }),

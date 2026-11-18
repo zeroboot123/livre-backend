@@ -1,6 +1,7 @@
 'use client';
 
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { publicEnv } from './public-env';
 
 interface User {
   id: string;
@@ -17,8 +18,6 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType>({} as AuthContextType);
-
-const API_URL = process.env.NEXT_PUBLIC_AUTH_URL || 'https://livrebackend.gerbox.com.br/auth';
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -37,7 +36,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function fetchUser(t: string) {
     try {
-      const res = await fetch(`${API_URL}/me`, {
+      const res = await fetch(`${publicEnv('AUTH_URL')}/me`, {
         headers: { Authorization: `Bearer ${t}` },
       });
       if (res.ok) {
@@ -53,7 +52,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function login(email: string, password: string) {
-    const res = await fetch(`${API_URL}/login`, {
+    const res = await fetch(`${publicEnv('AUTH_URL')}/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password }),

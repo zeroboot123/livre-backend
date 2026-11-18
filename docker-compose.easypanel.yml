@@ -1,6 +1,18 @@
+# ==============================================================
+# LIVRE BACKEND — EasyPanel (produção com imagens do GHCR)
+# --------------------------------------------------------------
+# Este compose NÃO compila código na VPS: usa imagens publicadas
+# pelo GitHub Actions em ghcr.io/zeroboot123/livre-*.
+#
+# Variáveis obrigatórias no EasyPanel (Ambiente):
+#   APP_VERSION, PUBLIC_URL, DB_SUPERPASS, JWT_SECRET,
+#   MINIO_ROOT_USER, MINIO_ROOT_PASSWORD
+#
+# Volumes e redes preservam os nomes da instalação atual.
+# ==============================================================
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.15-alpine
     restart: unless-stopped
     networks:
       - easypanel
@@ -8,11 +20,11 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     environment:
-      POSTGRES_USER: livre_admin
-      POSTGRES_PASSWORD: ${DB_SUPERPASS}
+      POSTGRES_USER: ${DB_SUPERUSER:-livre_admin}
+      POSTGRES_PASSWORD: ${DB_SUPERPASS:?DB_SUPERPASS is required}
       POSTGRES_DB: livre_backend
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U livre_admin"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_SUPERUSER:-livre_admin}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -20,27 +32,38 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512M
+          memory: ${PG_MEMORY_LIMIT:-512M}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   minio:
-    image: bitnamilegacy/minio:latest
+    # Digest fixo: mantém exatamente a imagem já validada em produção.
+    image: bitnamilegacy/minio@sha256:451fe6858cb770cc9d0e77ba811ce287420f781c7c1b806a386f6896471a349c
     restart: unless-stopped
     networks:
       - easypanel
     volumes:
       - minio_data:/bitnami/minio/data
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
       MINIO_DEFAULT_BUCKETS: ${MINIO_BUCKET:-livre-files}
       MINIO_BROWSER: "off"
     deploy:
       resources:
         limits:
           memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   postgrest:
-    image: postgrest/postgrest:latest
+    image: postgrest/postgrest:v16.5
     restart: unless-stopped
     networks:
       - easypanel
@@ -48,20 +71,24 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      PGRST_DB_URI: postgres://livre_admin:${DB_SUPERPASS}@postgres:5432/livre_backend
+      PGRST_DB_URI: postgres://${DB_SUPERUSER:-livre_admin}:${DB_SUPERPASS}@postgres:5432/livre_backend
       PGRST_DB_SCHEMA: public
       PGRST_DB_ANON_ROLE: anon
       PGRST_OPENAPI_SERVER_PROXY_URI: ${PUBLIC_URL}/api/rest
-      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
     deploy:
       resources:
         limits:
           memory: 128M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   auth-service:
-    build:
-      context: ./services/auth
-      dockerfile: Dockerfile
+    image: ghcr.io/zeroboot123/livre-auth-service:${APP_VERSION:?APP_VERSION is required}
+    pull_policy: always
     restart: unless-stopped
     networks:
       - easypanel
@@ -71,24 +98,33 @@ services:
     environment:
       PORT: 3001
       NODE_ENV: production
-      DATABASE_URL: postgres://livre_admin:${DB_SUPERPASS}@postgres:5432/livre_backend
-      JWT_SECRET: ${JWT_SECRET}
-      JWT_EXPIRATION: 15m
-      JWT_REFRESH_EXPIRATION: 7d
-      ARGON2_TIME_COST: 2
-      ARGON2_MEMORY_COST: 19456
-      CORS_ORIGINS: "*"
-      # Chave (fora do banco) para cifrar a senha SMTP em repouso (AES-256-GCM).
+      DATABASE_URL: postgres://${DB_SUPERUSER:-livre_admin}:${DB_SUPERPASS}@postgres:5432/livre_backend
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      JWT_EXPIRATION: ${JWT_EXPIRATION:-15m}
+      JWT_REFRESH_EXPIRATION: ${JWT_REFRESH_EXPIRATION:-7d}
+      ARGON2_TIME_COST: ${ARGON2_TIME_COST:-2}
+      ARGON2_MEMORY_COST: ${ARGON2_MEMORY_COST:-19456}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
       EMAIL_ENCRYPTION_KEY: ${EMAIL_ENCRYPTION_KEY:-}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     deploy:
       resources:
         limits:
           memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   admin-api:
-    build:
-      context: ./services/admin-api
-      dockerfile: Dockerfile
+    image: ghcr.io/zeroboot123/livre-admin-api:${APP_VERSION:?APP_VERSION is required}
+    pull_policy: always
     restart: unless-stopped
     networks:
       - easypanel
@@ -100,26 +136,38 @@ services:
     environment:
       PORT: 3002
       NODE_ENV: production
-      DATABASE_URL: postgres://livre_admin:${DB_SUPERPASS}@postgres:5432/livre_backend
-      JWT_SECRET: ${JWT_SECRET}
+      DATABASE_URL: postgres://${DB_SUPERUSER:-livre_admin}:${DB_SUPERPASS}@postgres:5432/livre_backend
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      BACKUP_DIR: /backups
       MINIO_ENDPOINT: http://minio:9000
       MINIO_REGION: us-east-1
       MINIO_BUCKET: ${MINIO_BUCKET:-livre-files}
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      MAX_UPLOAD_MB: 25
-      # Chave (fora do banco) para cifrar a senha SMTP em repouso (AES-256-GCM).
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-25}
       EMAIL_ENCRYPTION_KEY: ${EMAIL_ENCRYPTION_KEY:-}
       API_BASE_PATH: /admin/api
+    volumes:
+      - backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3002/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     deploy:
       resources:
         limits:
           memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   visual-db:
-    build:
-      context: ./services/visual-db
-      dockerfile: Dockerfile
+    image: ghcr.io/zeroboot123/livre-visual-db:${APP_VERSION:?APP_VERSION is required}
+    pull_policy: always
     restart: unless-stopped
     networks:
       - easypanel
@@ -129,18 +177,28 @@ services:
     environment:
       PORT: 3004
       NODE_ENV: production
-      DATABASE_URL: postgres://livre_admin:${DB_SUPERPASS}@postgres:5432/livre_backend
-      JWT_SECRET: ${JWT_SECRET}
+      DATABASE_URL: postgres://${DB_SUPERUSER:-livre_admin}:${DB_SUPERPASS}@postgres:5432/livre_backend
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       POSTGREST_URL: http://postgrest:3000
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3004/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     deploy:
       resources:
         limits:
           memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   admin-panel:
-    build:
-      context: ./panel
-      dockerfile: Dockerfile
+    image: ghcr.io/zeroboot123/livre-admin-panel:${APP_VERSION:?APP_VERSION is required}
+    pull_policy: always
     restart: unless-stopped
     networks:
       - easypanel
@@ -149,21 +207,45 @@ services:
       - admin-api
       - visual-db
     environment:
+      # Lidas em RUNTIME pelo layout do Next.js e injetadas no navegador.
+      # Permitem a mesma imagem em qualquer domínio, sem rebuild.
       NEXT_PUBLIC_API_URL: ${PUBLIC_URL}/admin/api
       NEXT_PUBLIC_AUTH_URL: ${PUBLIC_URL}/auth
       NEXT_PUBLIC_VISUAL_DB_URL: ${PUBLIC_URL}/admin/visual-db
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3003/admin/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     deploy:
       resources:
         limits:
           memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
+# ==============================================================
+# Volumes — nomes fixos para preservar os dados da instalação atual
+# ==============================================================
+volumes:
+  postgres_data:
+    name: livre-backend_livre-backend_postgres_data
+    driver: local
+  minio_data:
+    name: livre-backend_livre-backend_minio_data
+    driver: local
+  backups:
+    name: livre-backend_livre-backend_backups
+    driver: local
+
+# ==============================================================
+# Redes
+# ==============================================================
 networks:
   easypanel:
     external: true
     name: easypanel
-
-volumes:
-  postgres_data:
-    driver: local
-  minio_data:
-    driver: local

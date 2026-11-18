@@ -1,0 +1,123 @@
+name: Release images
+
+# Publica as imagens dos serviços no GHCR.
+# Dispara em tag de versão (vX.Y.Z) ou manualmente.
+# As tags usam a versão da tag; "latest" só em release.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      public_url:
+        description: "URL pública usada como fallback no build do painel"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: zeroboot123
+  PUBLIC_URL: ${{ inputs.public_url || vars.PUBLIC_URL || 'https://livrebackend.gerbox.com.br' }}
+
+jobs:
+  test:
+    name: Testes e validação
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Validar versão sincronizada
+        run: bash scripts/version.sh check
+
+      - name: Testes unitários (admin-api)
+        working-directory: services/admin-api
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+
+      - name: Compilar serviços TypeScript
+        run: |
+          set -e
+          for d in services/auth services/visual-db services/worker; do
+            echo "== $d"
+            (cd "$d" && (npm ci --no-audit --no-fund 2>/dev/null || npm install --no-audit --no-fund))
+            (cd "$d" && npm run build)
+          done
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: auth-service
+            context: services/auth
+            build_args: ""
+          - name: admin-api
+            context: services/admin-api
+            build_args: ""
+          - name: visual-db
+            context: services/visual-db
+            build_args: ""
+          - name: worker
+            context: services/worker
+            build_args: ""
+          - name: admin-panel
+            context: panel
+            build_args: |
+              NEXT_PUBLIC_API_URL=${{ env.PUBLIC_URL }}/admin/api
+              NEXT_PUBLIC_AUTH_URL=${{ env.PUBLIC_URL }}/auth
+              NEXT_PUBLIC_VISUAL_DB_URL=${{ env.PUBLIC_URL }}/admin/visual-db
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login no GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Metadados da imagem
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.OWNER }}/livre-${{ matrix.name }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Build e push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.context }}/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: ${{ matrix.build_args }}
+
+      - name: Validar publicação
+        run: |
+          TAG="$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1)"
+          echo "Validando $TAG"
+          docker buildx imagetools inspect "$TAG"

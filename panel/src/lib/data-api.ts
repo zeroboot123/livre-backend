@@ -1,4 +1,5 @@
 import { apiFetch } from './api-client';
+import { publicEnv } from './public-env';
 
 export interface DataTable {
   name: string;
@@ -316,7 +317,7 @@ export interface StoredFile {
 }
 
 function apiBase() {
-  return process.env.NEXT_PUBLIC_API_URL || 'https://livrebackend.gerbox.com.br/admin/api';
+  return publicEnv('API_URL');
 }
 
 function authHeader(): Record<string, string> {

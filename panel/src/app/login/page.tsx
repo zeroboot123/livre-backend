@@ -6,9 +6,9 @@ import { APP_VERSION } from '@/lib/version';
 import Link from 'next/link';
 import Image from 'next/image';
 import logo from '@/../public/logo-mark.png';
+import { publicEnv } from '@/lib/public-env';
 
-const AUTH_URL =
-  process.env.NEXT_PUBLIC_AUTH_URL || 'https://livrebackend.gerbox.com.br/auth';
+const AUTH_URL = publicEnv('AUTH_URL');
 
 export default function LoginPage() {
   const { login } = useAuth();

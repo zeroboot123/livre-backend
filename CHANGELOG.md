@@ -14,6 +14,27 @@ em versões MINOR. A partir de `1.0.0`, mudanças incompatíveis exigem MAJOR.
 - Chave de criptografia dedicada (`EMAIL_ENCRYPTION_KEY`) nos containers.
 - Formato de criptografia versionado com identificador de chave (`enc:v2`).
 - Rotação de chaves sem perda de credenciais.
+- Execução do worker no deploy do EasyPanel.
+- Endurecimento da exposição da porta 3000 do EasyPanel.
+
+## [0.9.0] - 2026-11-18
+
+### Adicionado
+- Publicação de imagens Docker no GHCR via GitHub Actions
+  (`.github/workflows/release-images.yml`), com tags semver e `latest` apenas
+  em releases.
+- `docker-compose.easypanel.yml` baseado em imagens (`APP_VERSION`), sem build
+  na VPS, com nomes de volumes fixos e volume persistente de backups.
+- Configuração pública do painel em **runtime** (`window.__LIVRE_ENV__`),
+  permitindo reutilizar a mesma imagem em qualquer domínio.
+- Documentação `docs/easypanel-ghcr.md` e seções de instalação/publicação no
+  README.
+- `.env.example` completo, com variáveis obrigatórias e opcionais.
+
+### Alterado
+- Imagens base fixadas (`node:22.23.5-alpine`, `postgres:16.15-alpine`,
+  `postgrest:v16.5`) e MinIO fixado por digest.
+- `admin-api` preparado com `/backups` (dono do usuário da aplicação).
 
 ## [0.8.0] - 2026-11-17
 

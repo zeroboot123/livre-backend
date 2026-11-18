@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { publicEnv } from '@/lib/public-env';
 
-const AUTH_URL =
-  process.env.NEXT_PUBLIC_AUTH_URL || 'https://livrebackend.gerbox.com.br/auth';
+const AUTH_URL = publicEnv('AUTH_URL');
 
 export default function Home() {
   const [needsSetup, setNeedsSetup] = useState(false);

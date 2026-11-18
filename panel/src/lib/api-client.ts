@@ -1,8 +1,10 @@
+import { publicEnv } from './public-env';
+
 export async function apiFetch(path: string, options?: RequestInit) {
   const token = typeof window !== 'undefined' ? localStorage.getItem('access_token') : null;
   const projectId =
     typeof window !== 'undefined' ? localStorage.getItem('livre_project_id') : null;
-  const API = process.env.NEXT_PUBLIC_API_URL || 'https://livrebackend.gerbox.com.br/admin/api';
+  const API = publicEnv('API_URL');
 
   // Só envia Content-Type quando existe corpo. Caso contrário (ex.: DELETE sem
   // body) o Fastify rejeita com FST_ERR_CTP_EMPTY_JSON_BODY.
@@ -38,7 +40,7 @@ export async function apiFetch(path: string, options?: RequestInit) {
  */
 export async function authFetch(path: string, options?: RequestInit) {
   const token = typeof window !== 'undefined' ? localStorage.getItem('access_token') : null;
-  const AUTH = process.env.NEXT_PUBLIC_AUTH_URL || 'https://livrebackend.gerbox.com.br/auth';
+  const AUTH = publicEnv('AUTH_URL');
 
   const headers: Record<string, string> = {
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
