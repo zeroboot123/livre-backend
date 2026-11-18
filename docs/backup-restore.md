@@ -60,3 +60,52 @@ O script confirma antes de prosseguir e usa `--clean --if-exists` no `pg_restore
 |---|---|
 | RPO | Até 24h (backups diários) |
 | RTO | < 30min (restore validado) |
+
+---
+
+## 8. Backup no host (produção EasyPanel)
+
+Na VPS o backup é feito por `scripts/backup-host.sh`, que **não depende** do
+diretório do compose e gera um diretório por execução:
+
+```bash
+BACKUP_ROOT=/home/adminvps/livre-backend/backups ./scripts/backup-host.sh 7
+```
+
+Conteúdo gerado:
+
+| Item | Arquivo |
+|---|---|
+| Banco (custom dump) | `postgres_livre_backend.dump` + `.sha256` |
+| Índice do dump (validação) | `postgres_livre_backend.dump.toc` |
+| Roles/usuários | `roles.sql` |
+| Bancos e schemas | `databases.txt`, `schemas.txt` |
+| Objetos do MinIO | `minio_data.tar.gz` + `.sha256` |
+| Containers/redes/volumes | `docker-containers.json`, `docker-network-easypanel.json` |
+| Configurações | `config/` (`.env`, compose, projeto do EasyPanel, Traefik) |
+| Inventário e integridade | `INFO.txt`, `checksums.sha256` |
+
+Segurança: o diretório é criado com `umask 077` (somente o dono). Os arquivos
+de `config/` contêm segredos e **nunca** devem ser enviados ao GitHub.
+
+### Automação (cron do usuário, testado na VPS)
+
+```cron
+15 3 * * * BACKUP_ROOT=/home/adminvps/livre-backend/backups RETENTION_DAYS=7 /home/adminvps/bin/livre-backup.sh >> /home/adminvps/livre-backend/backups/cron.log 2>&1
+```
+
+Retenção: diretórios com mais de `RETENTION_DAYS` dias são removidos.
+
+### Teste de restauração (executado em 18/11/2026)
+
+```bash
+# em um banco isolado, sem tocar na produção
+docker exec <postgres> createdb -U livre_admin livre_restore_test
+docker cp backup.dump <postgres>:/tmp/restore.dump
+docker exec <postgres> pg_restore -U livre_admin -d livre_restore_test \
+  --no-owner --no-privileges /tmp/restore.dump
+```
+
+Resultado: 49 tabelas, `livre_auth.users` com a mesma contagem da produção,
+schemas `proj_gbfatura` (23 tabelas) e `proj_zeroboot` (3 tabelas) presentes.
+Banco de teste removido ao final.

@@ -172,33 +172,44 @@ Os dados permanecem nos volumes.
 
 ## 10. Backup e restauração
 
-Hoje o backup é gerado no host por `scripts/backup.sh` (`pg_dump -Fc`),
-com checksum SHA-256 e retenção de 7 dias (configurável). O diretório
-`/backups` do `admin-api` está preparado para uso futuro, mas **o código do
-serviço ainda não gera backups**.
-
-Procedimento recomendado:
+O backup de produção é gerado no host por `scripts/backup-host.sh`
+(`pg_dump -Fc` + roles + volume do MinIO + configurações), com checksum
+SHA-256, retenção configurável (padrão 7 dias) e diretório protegido
+(`umask 077`).
 
 ```bash
-# banco
-./scripts/backup.sh 7
-
-# arquivos do MinIO (volume)
-docker run --rm \
-  -v livre-backend_livre-backend_minio_data:/data:ro \
-  -v "$PWD/backups":/out \
-  alpine:3.20 tar czf /out/minio_$(date +%Y%m%d_%H%M%S).tar.gz -C /data .
+BACKUP_ROOT=/home/adminvps/livre-backend/backups ./scripts/backup-host.sh 7
 ```
+
+Rotina automática já instalada na VPS (cron do usuário, diário às 03:15):
+
+```cron
+15 3 * * * BACKUP_ROOT=/home/adminvps/livre-backend/backups RETENTION_DAYS=7 /home/adminvps/bin/livre-backup.sh >> /home/adminvps/livre-backend/backups/cron.log 2>&1
+```
+
+> O volume `/backups` do `admin-api` existe e tem permissão de escrita, mas
+> **o serviço ainda não gera backups** — a geração real é feita no host.
 
 Validação:
 
 ```bash
-pg_restore -l backups/livre_backend_*.dump
-sha256sum -c backups/livre_backend_*.dump.sha256
+pg_restore -l <dump>          # ou: docker exec <postgres> pg_restore -l /caminho
+( cd <dir_do_backup> && sha256sum -c checksums.sha256 )
 ```
 
-Restauração: `./scripts/restore.sh backups/<arquivo>.dump` (confirma antes de
-aplicar e usa `--clean --if-exists`). Sempre teste antes em um banco isolado.
+Restauração (sempre testar antes em banco isolado):
+
+```bash
+docker exec <postgres> createdb -U livre_admin livre_restore_test
+docker cp <dump> <postgres>:/tmp/restore.dump
+docker exec <postgres> pg_restore -U livre_admin -d livre_restore_test \
+  --no-owner --no-privileges /tmp/restore.dump
+# validar e remover o banco de teste
+docker exec <postgres> dropdb -U livre_admin livre_restore_test
+```
+
+Para o banco de produção use `scripts/restore.sh` (confirma antes de aplicar e
+usa `--clean --if-exists`). Detalhes em [`backup-restore.md`](backup-restore.md).
 
 ---
 

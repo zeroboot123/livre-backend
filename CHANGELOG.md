@@ -30,6 +30,9 @@ em versões MINOR. A partir de `1.0.0`, mudanças incompatíveis exigem MAJOR.
 - Documentação `docs/easypanel-ghcr.md` e seções de instalação/publicação no
   README.
 - `.env.example` completo, com variáveis obrigatórias e opcionais.
+- `scripts/backup-host.sh`: backup de produção no host (dump do PostgreSQL,
+  roles, volume do MinIO, configurações e metadados Docker) com checksum,
+  retenção configurável e rotina diária via cron.
 
 ### Alterado
 - Imagens base fixadas (`node:22.23.5-alpine`, `postgres:16.15-alpine`,
