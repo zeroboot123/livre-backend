@@ -44,3 +44,5 @@ logs/
 # === Ambiente (variantes) ===
 .env.*
 !.env.example
+# === Regras locais do agente ===
+AGENTS.md
