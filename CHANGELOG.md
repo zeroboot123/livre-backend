@@ -10,6 +10,12 @@ em versões MINOR. A partir de `1.0.0`, mudanças incompatíveis exigem MAJOR.
 
 ## [Não lançado]
 
+### Adicionado
+- Documentação avançada da API de autenticação em `docs/api/auth-endpoints.md`:
+  fluxo de tokens (access/refresh), setup, login, refresh, logout, troca de senha,
+  recuperação de senha (forgot/reset) e rotas administrativas de usuários/sessões,
+  com exemplos e tabela de erros.
+
 ### Planejado
 - Chave de criptografia dedicada (`EMAIL_ENCRYPTION_KEY`) nos containers.
 - Formato de criptografia versionado com identificador de chave (`enc:v2`).

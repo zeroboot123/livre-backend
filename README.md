@@ -205,6 +205,13 @@ docker compose ps
 
 ---
 
+## 🔐 API de Autenticação (auth)
+
+Endpoints de login, refresh, logout, troca e recuperação de senha, além das
+rotas administrativas de usuários e sessões.
+
+- Documentação completa: [`docs/api/auth-endpoints.md`](docs/api/auth-endpoints.md)
+
 ## 🔌 API de dados (por projeto)
 
 Cada projeto expõe as tabelas marcadas como públicas em
