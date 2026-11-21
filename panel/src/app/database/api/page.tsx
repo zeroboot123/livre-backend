@@ -111,14 +111,11 @@ function ApiInner() {
     }
   };
 
-  const toggleTable = async (name: string) => {
-    const next = exposed.includes(name)
-      ? exposed.filter((t) => t !== name)
-      : [...exposed, name];
-    setExposed(next);
+  const saveExposed = async (names: string[]) => {
+    setExposed(names);
     setSaving(true);
     try {
-      const saved = await setExposedTables(next);
+      const saved = await setExposedTables(names);
       setExposed(saved);
     } catch (err: any) {
       notify(err?.message || 'Erro ao salvar tabelas expostas', 'error');
@@ -126,6 +123,13 @@ function ApiInner() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const toggleTable = async (name: string) => {
+    const next = exposed.includes(name)
+      ? exposed.filter((t) => t !== name)
+      : [...exposed, name];
+    await saveExposed(next);
   };
 
   const toggleRpcFunction = async (fn: RpcFunction) => {
@@ -180,6 +184,25 @@ function ApiInner() {
       notify('Token revogado');
     } catch (err: any) {
       notify(err?.message || 'Erro ao revogar token', 'error');
+    }
+  };
+
+  // Estado agregado da Data API: o checkbox principal reflete a seleção das tabelas.
+  const dataApiEnabled = settings?.data_api_enabled ?? false;
+  const allTablesExposed = tables.length > 0 && tables.every((t) => exposed.includes(t.name));
+  const someTablesExposed = tables.some((t) => exposed.includes(t.name));
+  const dataApiMasterChecked = dataApiEnabled && allTablesExposed;
+  const dataApiMasterIndeterminate = dataApiEnabled && !allTablesExposed && someTablesExposed;
+
+  // Marcar/desmarcar Data API aplica em cascata no estado das tabelas expostas.
+  const handleDataApiToggle = async (checked: boolean) => {
+    if (checked) {
+      const allNames = tables.map((t) => t.name);
+      await saveExposed(allNames);
+      await patch({ data_api_enabled: true });
+    } else {
+      await saveExposed([]);
+      await patch({ data_api_enabled: false });
     }
   };
 
@@ -268,9 +291,12 @@ function ApiInner() {
             <label className="flex items-center gap-2 text-[13px] font-medium text-slate-800">
               <input
                 type="checkbox"
-                checked={settings?.data_api_enabled ?? false}
+                checked={dataApiMasterChecked}
+                ref={(el) => {
+                  if (el) el.indeterminate = dataApiMasterIndeterminate;
+                }}
                 disabled={loading}
-                onChange={(e) => patch({ data_api_enabled: e.target.checked })}
+                onChange={(e) => handleDataApiToggle(e.target.checked)}
                 className="h-4 w-4 rounded border-slate-300 text-blue-600"
               />
               Enable Data API
