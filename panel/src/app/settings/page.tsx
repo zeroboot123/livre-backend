@@ -1,13 +1,38 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Loader2, Mail, Save, Send, CheckCircle, AlertCircle } from 'lucide-react';
+import { Loader2, Mail, Save, Send, CheckCircle, AlertCircle, Clock } from 'lucide-react';
 import {
   fetchEmailSettings,
   updateEmailSettings,
   testEmailSettings,
   type EmailSettingsData,
 } from '@/lib/data-api';
+import {
+  fetchSessionSettings,
+  updateSessionSettings,
+  type SessionSettings,
+} from '@/lib/auth-api';
+
+const ACCESS_TOKEN_OPTIONS = [
+  { value: '5m', label: '5 minutos' },
+  { value: '15m', label: '15 minutos' },
+  { value: '30m', label: '30 minutos' },
+  { value: '1h', label: '1 hora' },
+  { value: '2h', label: '2 horas' },
+  { value: '4h', label: '4 horas' },
+  { value: '12h', label: '12 horas' },
+  { value: '1d', label: '1 dia' },
+];
+
+const REFRESH_TOKEN_OPTIONS = [
+  { value: '1d', label: '1 dia' },
+  { value: '7d', label: '7 dias' },
+  { value: '30d', label: '30 dias' },
+  { value: '60d', label: '60 dias' },
+  { value: '90d', label: '90 dias' },
+  { value: '180d', label: '180 dias' },
+];
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<EmailSettingsData>({
@@ -17,6 +42,10 @@ export default function SettingsPage() {
     from_name: '',
     from_email: '',
     encryption: 'tls',
+  });
+  const [sessionSettings, setSessionSettings] = useState<SessionSettings>({
+    access_token_expiration: '15m',
+    refresh_token_expiration: '7d',
   });
   // A senha é mantida fora do objeto de configurações: o backend nunca a devolve.
   const [password, setPassword] = useState('');
@@ -31,6 +60,11 @@ export default function SettingsPage() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
 
+  // Tempo de sessão (token de acesso / refresh token)
+  const [sessionSaving, setSessionSaving] = useState(false);
+  const [sessionSaved, setSessionSaved] = useState(false);
+  const [sessionError, setSessionError] = useState('');
+
   useEffect(() => {
     (async () => {
       try {
@@ -39,6 +73,12 @@ export default function SettingsPage() {
           setSettings(data.settings);
           setPasswordConfigured(!!data.settings.smtp_password_configured);
         }
+      } catch {
+        // ignored
+      }
+      try {
+        const session = await fetchSessionSettings();
+        setSessionSettings(session);
       } catch {
         // ignored
       } finally {
@@ -94,6 +134,22 @@ export default function SettingsPage() {
       setTestResult({ ok: false, message: err?.message || 'Falha ao enviar email de teste' });
     } finally {
       setTesting(false);
+    }
+  };
+
+  const handleSessionSave = async () => {
+    setSessionSaving(true);
+    setSessionSaved(false);
+    setSessionError('');
+    try {
+      const result = await updateSessionSettings(sessionSettings);
+      if (result) setSessionSettings(result);
+      setSessionSaved(true);
+      setTimeout(() => setSessionSaved(false), 3000);
+    } catch (err: any) {
+      setSessionError(err?.message || 'Erro ao salvar tempo de sessão');
+    } finally {
+      setSessionSaving(false);
     }
   };
 
@@ -316,6 +372,91 @@ export default function SettingsPage() {
                 {testResult.message}
               </div>
             )}
+          </div>
+        </div>
+
+        {/* Session Duration Section */}
+        <div className="rounded-xl border border-slate-200 bg-white">
+          <div className="flex items-center gap-2 border-b border-slate-100 px-6 py-4">
+            <Clock className="h-5 w-5 text-blue-600" />
+            <h2 className="text-lg font-semibold text-slate-800">Tempo de Sessão</h2>
+          </div>
+
+          <div className="space-y-5 p-6">
+            <p className="text-sm text-slate-500">
+              Defina a validade do token de acesso e da sessão (refresh token) emitidos no login.
+            </p>
+
+            <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">
+                  Tempo de acesso (token)
+                </label>
+                <select
+                  value={sessionSettings.access_token_expiration}
+                  onChange={(e) => {
+                    setSessionSettings((prev) => ({ ...prev, access_token_expiration: e.target.value }));
+                    setSessionSaved(false);
+                  }}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/15"
+                >
+                  {ACCESS_TOKEN_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">
+                  Tempo de renovação (refresh token)
+                </label>
+                <select
+                  value={sessionSettings.refresh_token_expiration}
+                  onChange={(e) => {
+                    setSessionSettings((prev) => ({ ...prev, refresh_token_expiration: e.target.value }));
+                    setSessionSaved(false);
+                  }}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/15"
+                >
+                  {REFRESH_TOKEN_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {sessionError && (
+              <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                {sessionError}
+              </div>
+            )}
+
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleSessionSave}
+                disabled={sessionSaving}
+                className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                {sessionSaving ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Save className="h-4 w-4" />
+                )}
+                {sessionSaving ? 'Salvando...' : 'Salvar'}
+              </button>
+
+              {sessionSaved && (
+                <span className="flex items-center gap-1 text-sm text-green-600">
+                  <CheckCircle className="h-4 w-4" />
+                  Configurações salvas!
+                </span>
+              )}
+            </div>
           </div>
         </div>
       </div>

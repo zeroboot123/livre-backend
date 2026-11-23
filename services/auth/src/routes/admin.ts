@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { sql } from '../db/pool.js';
 import { adminMiddleware } from '../middleware/auth.js';
+import { config } from '../config/index.js';
 
 export async function adminRoutes(app: FastifyInstance) {
   // Todas as rotas de admin exigem autenticação + role admin
@@ -96,7 +97,40 @@ export async function adminRoutes(app: FastifyInstance) {
 
   // DELETE /auth/admin/sessions/:id - Revogar sessão
   app.delete<{ Params: { id: string } }>('/admin/sessions/:id', async (request, reply) => {
-    await sql`UPDATE livre_auth.sessions SET revoked = TRUE WHERE id = ${request.params.id}`;
+    await sql`UPDATE libre_auth.sessions SET revoked = TRUE WHERE id = ${request.params.id}`;
     return { message: 'Sessão revogada' };
   });
+
+  // GET /auth/admin/session-settings - Retorna as durações de token da sessão
+  app.get('/admin/session-settings', async () => {
+    return {
+      settings: {
+        access_token_expiration: config.jwt.expiration,
+        refresh_token_expiration: config.jwt.refreshExpiration,
+      },
+    };
+  });
+
+  // PUT /auth/admin/session-settings - Atualiza as durações da sessão (em memória)
+  app.put<{ Body: { access_token_expiration: string; refresh_token_expiration: string } }>(
+    '/admin/session-settings',
+    async (request, reply) => {
+      const body = z
+        .object({
+          access_token_expiration: z.string().regex(/^\d+[smhd]$/, 'Formato inválido. Ex: 15m'),
+          refresh_token_expiration: z.string().regex(/^\d+[smhd]$/, 'Formato inválido. Ex: 7d'),
+        })
+        .parse(request.body);
+
+      config.jwt.expiration = body.access_token_expiration;
+      config.jwt.refreshExpiration = body.refresh_token_expiration;
+
+      return {
+        settings: {
+          access_token_expiration: body.access_token_expiration,
+          refresh_token_expiration: body.refresh_token_expiration,
+        },
+      };
+    }
+  );
 }
